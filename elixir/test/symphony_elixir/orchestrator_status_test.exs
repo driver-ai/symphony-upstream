@@ -916,10 +916,11 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
       end
     end)
 
+    # A stalled worker is asked to stop like any other; this one obliges by exiting.
     worker_pid =
       spawn(fn ->
         receive do
-          :done -> :ok
+          {:symphony_stop_run, _reason} -> :ok
         end
       end)
 
@@ -928,7 +929,7 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
 
     running_entry = %{
       pid: worker_pid,
-      ref: make_ref(),
+      ref: nil,
       identifier: "MT-STALL",
       issue: %Issue{
         id: issue_id,
@@ -947,16 +948,17 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
 
     :sys.replace_state(pid, fn _ ->
       initial_state
-      |> Map.put(:running, %{issue_id => running_entry})
+      |> Map.put(:running, %{issue_id => %{running_entry | ref: Process.monitor(worker_pid)}})
       |> Map.put(:claimed, MapSet.put(initial_state.claimed, issue_id))
     end)
 
     send(pid, :tick)
-    Process.sleep(100)
+    Process.sleep(300)
     state = :sys.get_state(pid)
 
     refute Process.alive?(worker_pid)
     refute Map.has_key?(state.running, issue_id)
+    refute MapSet.member?(state.claimed, issue_id)
 
     assert %{
              attempt: 1,
@@ -1799,5 +1801,136 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
       {next_tokens, [{timestamp, next_tokens} | acc]}
     end)
     |> elem(1)
+  end
+
+  test "orchestrator stops a worker gracefully when its issue leaves the active states" do
+    write_workflow_file!(Workflow.workflow_file_path(),
+      tracker_kind: "memory",
+      codex_stall_timeout_ms: 0
+    )
+
+    issue_id = "issue-graceful-stop"
+    orchestrator_name = Module.concat(__MODULE__, :GracefulStopOrchestrator)
+    {:ok, pid} = Orchestrator.start_link(name: orchestrator_name)
+
+    on_exit(fn ->
+      if Process.alive?(pid) do
+        Process.exit(pid, :normal)
+      end
+    end)
+
+    test_pid = self()
+
+    # Stands in for the agent task: a stop request makes it exit normally, as the runner does once
+    # its after blocks have run.
+    worker_pid =
+      spawn(fn ->
+        receive do
+          {:symphony_stop_run, reason} -> send(test_pid, {:worker_stopped, reason})
+        end
+      end)
+
+    issue = %Issue{
+      id: issue_id,
+      identifier: "MT-GRACEFUL",
+      state: "In Review",
+      url: "https://example.org/issues/MT-GRACEFUL"
+    }
+
+    Application.put_env(:symphony_elixir, :memory_tracker_issues, [issue])
+
+    :sys.replace_state(pid, fn state ->
+      running_entry = %{
+        pid: worker_pid,
+        ref: Process.monitor(worker_pid),
+        identifier: "MT-GRACEFUL",
+        issue: %{issue | state: "In Progress"},
+        session_id: "thread-graceful-turn-graceful",
+        last_codex_message: nil,
+        last_codex_timestamp: DateTime.utc_now(),
+        last_codex_event: :notification,
+        started_at: DateTime.utc_now()
+      }
+
+      state
+      |> Map.put(:running, %{issue_id => running_entry})
+      |> Map.put(:claimed, MapSet.put(state.claimed, issue_id))
+    end)
+
+    send(pid, :tick)
+
+    assert_receive {:worker_stopped, :issue_inactive}, 2_000
+    Process.sleep(200)
+    state = :sys.get_state(pid)
+
+    refute Process.alive?(worker_pid)
+    refute Map.has_key?(state.running, issue_id)
+    refute MapSet.member?(state.claimed, issue_id)
+    assert state.retry_attempts == %{}
+  end
+
+  test "orchestrator terminates a worker that ignores the stop request once the deadline passes" do
+    write_workflow_file!(Workflow.workflow_file_path(),
+      tracker_kind: "memory",
+      codex_stall_timeout_ms: 0,
+      codex_stop_timeout_ms: 100,
+      hook_timeout_ms: 100
+    )
+
+    issue_id = "issue-stop-deadline"
+    orchestrator_name = Module.concat(__MODULE__, :StopDeadlineOrchestrator)
+    {:ok, pid} = Orchestrator.start_link(name: orchestrator_name)
+
+    on_exit(fn ->
+      if Process.alive?(pid) do
+        Process.exit(pid, :normal)
+      end
+    end)
+
+    worker_pid =
+      spawn(fn ->
+        receive do
+          :never -> :ok
+        end
+      end)
+
+    issue = %Issue{
+      id: issue_id,
+      identifier: "MT-DEADLINE",
+      state: "In Review",
+      url: "https://example.org/issues/MT-DEADLINE"
+    }
+
+    Application.put_env(:symphony_elixir, :memory_tracker_issues, [issue])
+
+    :sys.replace_state(pid, fn state ->
+      running_entry = %{
+        pid: worker_pid,
+        ref: Process.monitor(worker_pid),
+        identifier: "MT-DEADLINE",
+        issue: %{issue | state: "In Progress"},
+        session_id: "thread-deadline-turn-deadline",
+        last_codex_message: nil,
+        last_codex_timestamp: DateTime.utc_now(),
+        last_codex_event: :notification,
+        started_at: DateTime.utc_now()
+      }
+
+      state
+      |> Map.put(:running, %{issue_id => running_entry})
+      |> Map.put(:claimed, MapSet.put(state.claimed, issue_id))
+    end)
+
+    send(pid, :tick)
+    Process.sleep(100)
+    assert Map.has_key?(:sys.get_state(pid).running, issue_id)
+    assert Process.alive?(worker_pid)
+
+    Process.sleep(500)
+    state = :sys.get_state(pid)
+
+    refute Process.alive?(worker_pid)
+    refute Map.has_key?(state.running, issue_id)
+    refute MapSet.member?(state.claimed, issue_id)
   end
 end

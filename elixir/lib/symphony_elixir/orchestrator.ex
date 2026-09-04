@@ -134,14 +134,7 @@ defmodule SymphonyElixir.Orchestrator do
         {:noreply, state}
 
       issue_id ->
-        {running_entry, state} = pop_running_entry(state, issue_id)
-        state = record_session_completion_totals(state, running_entry)
-        session_id = running_entry_session_id(running_entry)
-
-        state = handle_agent_down(reason, state, issue_id, running_entry, session_id)
-
-        Logger.info("Agent task finished for issue_id=#{issue_id} session_id=#{session_id} reason=#{inspect(reason)}")
-
+        state = handle_running_exit(state, issue_id, reason)
         notify_dashboard()
         {:noreply, state}
     end
@@ -199,6 +192,20 @@ defmodule SymphonyElixir.Orchestrator do
   end
 
   def handle_info({:retry_issue, _issue_id}, state), do: {:noreply, state}
+
+  def handle_info({:stop_deadline, issue_id, pid}, %{running: running} = state) do
+    case Map.get(running, issue_id) do
+      %{pid: ^pid, stopping: %{} = stopping} = running_entry ->
+        Logger.warning("Graceful stop deadline passed for issue_id=#{issue_id} issue_identifier=#{running_entry.identifier}; terminating the agent task")
+
+        state = force_terminate_running_issue(state, issue_id, running_entry, stopping.cleanup_workspace)
+        notify_dashboard()
+        {:noreply, state}
+
+      _ ->
+        {:noreply, state}
+    end
+  end
 
   def handle_info(msg, state) do
     Logger.debug("Orchestrator ignored message: #{inspect(msg)}")
@@ -354,6 +361,12 @@ defmodule SymphonyElixir.Orchestrator do
           state
       end
     end
+  end
+
+  @doc false
+  @spec agent_down_for_test(term(), String.t(), term()) :: term()
+  def agent_down_for_test(%State{} = state, issue_id, reason) when is_binary(issue_id) do
+    handle_running_exit(state, issue_id, reason)
   end
 
   @doc false
@@ -551,31 +564,111 @@ defmodule SymphonyElixir.Orchestrator do
     end
   end
 
+  # Stopping a run is a request first and a kill last. The runner is asked to stop (it interrupts
+  # the Codex turn and unwinds through its after blocks, so the session is closed and `after_run`
+  # runs); the entry stays in `running` as `stopping` until the task exits, which the :DOWN handler
+  # finishes, or until the deadline passes and the task is terminated as before.
   defp terminate_running_issue(%State{} = state, issue_id, cleanup_workspace) do
     case Map.get(state.running, issue_id) do
       nil ->
         release_issue_claim(state, issue_id)
 
-      %{pid: pid, ref: ref, identifier: identifier} = running_entry ->
-        state = record_session_completion_totals(state, running_entry)
+      %{stopping: %{}} ->
+        state
 
-        stop_running_task(pid, ref, state.task_supervisor)
-
-        if cleanup_workspace do
-          cleanup_issue_workspace(Map.get(running_entry, :issue, identifier), running_entry)
+      %{pid: pid, ref: _ref, identifier: _identifier} = running_entry ->
+        if is_pid(pid) and Process.alive?(pid) do
+          request_graceful_stop(state, issue_id, running_entry, cleanup_workspace)
+        else
+          force_terminate_running_issue(state, issue_id, running_entry, cleanup_workspace)
         end
-
-        %{
-          state
-          | running: Map.delete(state.running, issue_id),
-            claimed: MapSet.delete(state.claimed, issue_id),
-            blocked: Map.delete(state.blocked, issue_id),
-            retry_attempts: Map.delete(state.retry_attempts, issue_id)
-        }
 
       _ ->
         release_issue_claim(state, issue_id)
     end
+  end
+
+  # The running task exited (:DOWN). A task that was asked to stop is finished here; any other exit
+  # goes through the completion, blocking, and retry rules.
+  defp handle_running_exit(%State{} = state, issue_id, reason) do
+    {running_entry, state} = pop_running_entry(state, issue_id)
+    state = record_session_completion_totals(state, running_entry)
+    session_id = running_entry_session_id(running_entry)
+
+    state =
+      case Map.get(running_entry, :stopping) do
+        %{} = stopping -> finish_graceful_stop(state, issue_id, running_entry, stopping, reason)
+        _ -> handle_agent_down(reason, state, issue_id, running_entry, session_id)
+      end
+
+    Logger.info("Agent task finished for issue_id=#{issue_id} session_id=#{session_id} reason=#{inspect(reason)}")
+
+    state
+  end
+
+  defp request_graceful_stop(%State{} = state, issue_id, running_entry, cleanup_workspace) do
+    reason = if cleanup_workspace, do: :issue_terminal, else: :issue_inactive
+    deadline_ms = graceful_stop_deadline_ms()
+
+    AgentRunner.request_stop(running_entry.pid, reason)
+    timer = Process.send_after(self(), {:stop_deadline, issue_id, running_entry.pid}, deadline_ms)
+
+    Logger.info("Requested graceful stop for issue_id=#{issue_id} issue_identifier=#{running_entry.identifier} reason=#{reason} deadline_ms=#{deadline_ms}")
+
+    stopping = %{
+      reason: reason,
+      cleanup_workspace: cleanup_workspace,
+      requested_at: DateTime.utc_now(),
+      timer: timer
+    }
+
+    %{
+      state
+      | running: Map.put(state.running, issue_id, Map.put(running_entry, :stopping, stopping)),
+        blocked: Map.delete(state.blocked, issue_id),
+        retry_attempts: Map.delete(state.retry_attempts, issue_id)
+    }
+  end
+
+  defp finish_graceful_stop(%State{} = state, issue_id, running_entry, stopping, exit_reason) do
+    if is_reference(stopping[:timer]) do
+      Process.cancel_timer(stopping.timer)
+    end
+
+    Logger.info("Agent task stopped for issue_id=#{issue_id} issue_identifier=#{running_entry.identifier} reason=#{inspect(stopping.reason)} exit=#{inspect(exit_reason)}")
+
+    if stopping.cleanup_workspace do
+      cleanup_issue_workspace(Map.get(running_entry, :issue, running_entry.identifier), running_entry)
+    end
+
+    # Only the claim: a retry scheduled after the stop request (a stalled worker) must survive.
+    %{state | claimed: MapSet.delete(state.claimed, issue_id)}
+  end
+
+  defp force_terminate_running_issue(%State{} = state, issue_id, running_entry, cleanup_workspace) do
+    identifier = Map.get(running_entry, :identifier, issue_id)
+    state = record_session_completion_totals(state, running_entry)
+
+    stop_running_task(Map.get(running_entry, :pid), Map.get(running_entry, :ref), state.task_supervisor)
+
+    if cleanup_workspace do
+      cleanup_issue_workspace(Map.get(running_entry, :issue, identifier), running_entry)
+    end
+
+    %{
+      state
+      | running: Map.delete(state.running, issue_id),
+        claimed: MapSet.delete(state.claimed, issue_id),
+        blocked: Map.delete(state.blocked, issue_id),
+        retry_attempts: Map.delete(state.retry_attempts, issue_id)
+    }
+  end
+
+  # The interrupt should end the turn within seconds; the after_run hook may then run for up to its
+  # own timeout. Past both, the task is terminated the old way.
+  defp graceful_stop_deadline_ms do
+    settings = Config.settings!()
+    settings.codex.stop_timeout_ms + settings.hooks.timeout_ms
   end
 
   defp reconcile_stalled_running_issues(%State{} = state) do
@@ -598,7 +691,7 @@ defmodule SymphonyElixir.Orchestrator do
   end
 
   defp maybe_restart_stalled_issue(state, issue_id, running_entry, now, timeout_ms) do
-    if Map.has_key?(state.blocked, issue_id) do
+    if Map.has_key?(state.blocked, issue_id) or Map.has_key?(running_entry, :stopping) do
       state
     else
       restart_stalled_issue(state, issue_id, running_entry, now, timeout_ms)

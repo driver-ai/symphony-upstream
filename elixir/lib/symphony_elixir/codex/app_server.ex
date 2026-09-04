@@ -9,6 +9,15 @@ defmodule SymphonyElixir.Codex.AppServer do
   @initialize_id 1
   @thread_start_id 2
   @turn_start_id 3
+  @turn_interrupt_id 4
+
+  # A graceful stop (SymphonyElixir.AgentRunner.request_stop/2) arrives in the runner process's
+  # mailbox as this message while run_turn/4 is receiving the turn stream. The receive loop only
+  # knows the port, so the active turn's ids and the pending stop live in the process dictionary
+  # for the duration of run_turn/4.
+  @stop_run_message :symphony_stop_run
+  @active_turn_key :symphony_active_turn
+  @stop_requested_key :symphony_stop_requested
   @port_line_bytes 1_048_576
   @max_stream_log_bytes 1_000
   @type session :: %{
@@ -107,8 +116,27 @@ defmodule SymphonyElixir.Codex.AppServer do
           metadata
         )
 
-        case await_turn_completion(port, on_message, tool_executor, auto_approve_requests) do
-          {:ok, result} ->
+        Process.put(@active_turn_key, %{thread_id: thread_id, turn_id: turn_id})
+        completion = await_turn_completion(port, on_message, tool_executor, auto_approve_requests)
+        Process.delete(@active_turn_key)
+
+        case {Process.delete(@stop_requested_key), completion} do
+          {stop_reason, completion} when not is_nil(stop_reason) ->
+            # The orchestrator asked for a stop and the turn has ended (interrupted, completed on its
+            # own, or failed on the way out). Report a stopped turn so the runner ends the attempt
+            # normally and its after blocks run; the completion outcome no longer matters.
+            Logger.info("Codex session stopped on request for #{issue_context(issue)} session_id=#{session_id} reason=#{inspect(stop_reason)} completion=#{inspect(completion)}")
+
+            {:ok,
+             %{
+               result: :stopped,
+               stopped: stop_reason,
+               session_id: session_id,
+               thread_id: thread_id,
+               turn_id: turn_id
+             }}
+
+          {nil, {:ok, result}} ->
             Logger.info("Codex session completed for #{issue_context(issue)} session_id=#{session_id}")
 
             {:ok,
@@ -119,7 +147,7 @@ defmodule SymphonyElixir.Codex.AppServer do
                turn_id: turn_id
              }}
 
-          {:error, reason} ->
+          {nil, {:error, reason}} ->
             Logger.warning("Codex session ended with error for #{issue_context(issue)} session_id=#{session_id}: #{inspect(reason)}")
 
             emit_message(
@@ -394,10 +422,40 @@ defmodule SymphonyElixir.Codex.AppServer do
 
       {^port, {:exit_status, status}} ->
         {:error, {:port_exit, status}}
+
+      {@stop_run_message, reason} ->
+        request_turn_interrupt(port, reason)
+        receive_loop(port, on_message, timeout_ms, pending_line, tool_executor, auto_approve_requests)
     after
       timeout_ms ->
         {:error, :turn_timeout}
     end
+  end
+
+  # Ask Codex to end the active turn (`turn/interrupt`; the turn then completes with status
+  # `interrupted`) and remember the stop so run_turn/4 reports it. Only the first request acts; the
+  # stream keeps draining until the completion arrives, so the run unwinds through its after blocks
+  # instead of being killed mid-turn.
+  defp request_turn_interrupt(port, reason) do
+    if is_nil(Process.get(@stop_requested_key)) do
+      Process.put(@stop_requested_key, reason)
+
+      case Process.get(@active_turn_key) do
+        %{thread_id: thread_id, turn_id: turn_id} ->
+          Logger.info("Interrupting Codex turn on stop request thread_id=#{thread_id} turn_id=#{turn_id} reason=#{inspect(reason)}")
+
+          send_message(port, %{
+            "method" => "turn/interrupt",
+            "id" => @turn_interrupt_id,
+            "params" => %{"threadId" => thread_id, "turnId" => turn_id}
+          })
+
+        _ ->
+          :ok
+      end
+    end
+
+    :ok
   end
 
   defp handle_incoming(port, on_message, data, timeout_ms, tool_executor, auto_approve_requests) do

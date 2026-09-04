@@ -35,6 +35,20 @@ defmodule SymphonyElixir.AgentRunner do
     end
   end
 
+  @stop_run_message :symphony_stop_run
+
+  @doc """
+  Ask a running agent task to stop gracefully. The active Codex turn is interrupted, its stream
+  drains, and the run unwinds through its `after` blocks, so the Codex session is closed and the
+  `after_run` hook executes, instead of the task being killed mid-turn. `Codex.AppServer` consumes
+  the message while a turn streams; the runner consumes it between turns.
+  """
+  @spec request_stop(pid(), term()) :: :ok
+  def request_stop(pid, reason) when is_pid(pid) do
+    send(pid, {@stop_run_message, reason})
+    :ok
+  end
+
   defp run_on_worker_host(issue, codex_update_recipient, opts, worker_host) do
     Logger.info("Starting worker attempt for #{issue_context(issue)} worker_host=#{worker_host_for_log(worker_host)}")
 
@@ -110,32 +124,52 @@ defmodule SymphonyElixir.AgentRunner do
            ) do
       Logger.info("Completed agent run for #{issue_context(issue)} session_id=#{turn_session[:session_id]} workspace=#{workspace} turn=#{turn_number}/#{max_turns}")
 
-      case continue_with_issue?(issue, issue_state_fetcher) do
-        {:continue, refreshed_issue} when turn_number < max_turns ->
-          Logger.info("Continuing agent run for #{issue_context(refreshed_issue)} after normal turn completion turn=#{turn_number}/#{max_turns}")
-
-          do_run_codex_turns(
-            app_session,
-            workspace,
-            refreshed_issue,
-            codex_update_recipient,
-            opts,
-            issue_state_fetcher,
-            turn_number + 1,
-            max_turns
-          )
-
-        {:continue, refreshed_issue} ->
-          Logger.info("Reached agent.max_turns for #{issue_context(refreshed_issue)} with issue still active; returning control to orchestrator")
+      case stop_request(turn_session) do
+        {:stop, reason} ->
+          Logger.info("Stopping agent run for #{issue_context(issue)} on orchestrator request reason=#{inspect(reason)} turn=#{turn_number}/#{max_turns}")
 
           :ok
 
-        {:done, _refreshed_issue} ->
-          :ok
+        :none ->
+          case continue_with_issue?(issue, issue_state_fetcher) do
+            {:continue, refreshed_issue} when turn_number < max_turns ->
+              Logger.info("Continuing agent run for #{issue_context(refreshed_issue)} after normal turn completion turn=#{turn_number}/#{max_turns}")
 
-        {:error, reason} ->
-          {:error, reason}
+              do_run_codex_turns(
+                app_session,
+                workspace,
+                refreshed_issue,
+                codex_update_recipient,
+                opts,
+                issue_state_fetcher,
+                turn_number + 1,
+                max_turns
+              )
+
+            {:continue, refreshed_issue} ->
+              Logger.info("Reached agent.max_turns for #{issue_context(refreshed_issue)} with issue still active; returning control to orchestrator")
+
+              :ok
+
+            {:done, _refreshed_issue} ->
+              :ok
+
+            {:error, reason} ->
+              {:error, reason}
+          end
       end
+    end
+  end
+
+  # A stop that arrived while the turn streamed is reported by the app server as a stopped turn; one
+  # that arrives between turns is still in the mailbox.
+  defp stop_request(%{stopped: reason}) when not is_nil(reason), do: {:stop, reason}
+
+  defp stop_request(_turn_session) do
+    receive do
+      {@stop_run_message, reason} -> {:stop, reason}
+    after
+      0 -> :none
     end
   end
 
