@@ -489,6 +489,11 @@ fields locally if they want stricter startup checks.
 - `stall_timeout_ms` (integer)
   - Default: `300000` (5 minutes)
   - If `<= 0`, stall detection is disabled.
+- `stop_timeout_ms` (integer)
+  - Default: `60000` (1 minute)
+  - How long the orchestrator waits for an interrupted turn to end after requesting a graceful stop
+    (section 9.4); the `hooks.timeout_ms` budget for `after_run` is added on top before the worker
+    is terminated.
 
 ### 5.4 Prompt Template Contract
 
@@ -631,6 +636,7 @@ not require recognizing or validating extension fields unless that extension is 
 - `codex.turn_timeout_ms`: integer, default `3600000`
 - `codex.read_timeout_ms`: integer, default `5000`
 - `codex.stall_timeout_ms`: integer, default `300000`
+- `codex.stop_timeout_ms`: integer, default `60000`
 
 ## 7. Orchestration State Machine
 
@@ -832,11 +838,15 @@ Part B: Tracker state refresh
 
 - Fetch current issue states for all running issue IDs.
 - For each running issue:
-  - If tracker state is terminal: terminate worker and clean workspace.
+  - If tracker state is terminal: stop worker and clean workspace.
   - If tracker state is still active and routable: update the in-memory issue snapshot.
-  - If tracker state is active but no longer routable: terminate worker without workspace cleanup.
-  - If tracker state is neither active nor terminal: terminate worker without workspace cleanup.
+  - If tracker state is active but no longer routable: stop worker without workspace cleanup.
+  - If tracker state is neither active nor terminal: stop worker without workspace cleanup.
 - If state refresh fails, keep workers running and try again on the next tick.
+- "Stop worker" is a graceful stop (section 9.4): the worker is asked to stop, interrupts its
+  active Codex turn, and exits through its normal cleanup so `after_run` executes; workspace
+  cleanup, when required, happens after the worker has exited. Only when the worker has not exited
+  within `codex.stop_timeout_ms + hooks.timeout_ms` is it terminated.
 
 ### 8.6 Startup Terminal Workspace Cleanup
 
@@ -924,6 +934,18 @@ Failure semantics:
 - `before_run` failure or timeout is fatal to the current run attempt.
 - `after_run` failure or timeout is logged and ignored.
 - `before_remove` failure or timeout is logged and ignored.
+
+Stop sequence:
+
+- When the orchestrator stops a running attempt (terminal, non-active, or unroutable tracker state;
+  section 8), it MUST request the stop from the worker rather than terminate it outright. The worker
+  interrupts the active Codex turn through the targeted protocol (`turn/interrupt`), drains the turn
+  stream until the turn ends, closes the Codex session, and runs `after_run`. The attempt ends as
+  stopped, which is neither a success continuation nor a retryable failure.
+- The orchestrator keeps the issue claimed and its entry in the running set (marked stopping) until
+  the worker exits, then releases the claim and, for terminal states, removes the workspace.
+- If the worker has not exited within `codex.stop_timeout_ms + hooks.timeout_ms`, the orchestrator
+  terminates it; `after_run` is then skipped, as it was for every stop before this sequence existed.
 
 ### 9.5 Safety Invariants
 
@@ -1022,6 +1044,9 @@ Completion conditions:
 - Targeted-protocol turn cancellation signal -> failure
 - turn stream silence timeout (`turn_timeout_ms`) -> failure
 - subprocess exit -> failure
+- Orchestrator stop request received while streaming -> send the targeted-protocol interrupt for
+  the active turn, keep processing until the turn ends, then report the turn as stopped (section
+  9.4); the turn's own completion outcome is not treated as success or failure.
 
 Continuation processing:
 
@@ -1889,6 +1914,11 @@ function reconcile_running_issues(state):
 
   return state
 ```
+
+`terminate_running_issue` requests a graceful stop (section 9.4): it sends the stop request to the
+worker, marks the running entry as stopping with a deadline, and returns; the worker's exit releases
+the claim and performs the workspace cleanup, and the deadline terminates a worker that did not
+exit. A second call for an entry already stopping is a no-op.
 
 ### 16.4 Dispatch One Issue
 

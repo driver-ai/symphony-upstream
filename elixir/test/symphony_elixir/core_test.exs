@@ -529,9 +529,18 @@ defmodule SymphonyElixir.CoreTest do
 
       updated_state = Orchestrator.reconcile_issue_states_for_test([issue], state)
 
-      refute Map.has_key?(updated_state.running, issue_id)
-      refute MapSet.member?(updated_state.claimed, issue_id)
-      refute Process.alive?(agent_pid)
+      # The stop is a request: the agent is asked to unwind, and the claim is held until it exits.
+      assert %{stopping: %{reason: :issue_inactive, cleanup_workspace: false}} = updated_state.running[issue_id]
+      assert MapSet.member?(updated_state.claimed, issue_id)
+      assert {:messages, [{:symphony_stop_run, :issue_inactive}]} = Process.info(agent_pid, :messages)
+      assert Process.alive?(agent_pid)
+      assert File.exists?(workspace)
+
+      send(agent_pid, :stop)
+      finished_state = Orchestrator.agent_down_for_test(updated_state, issue_id, :normal)
+
+      refute Map.has_key?(finished_state.running, issue_id)
+      refute MapSet.member?(finished_state.claimed, issue_id)
       assert File.exists?(workspace)
     after
       File.rm_rf(test_root)
@@ -569,7 +578,7 @@ defmodule SymphonyElixir.CoreTest do
 
           try do
             receive do
-              {:EXIT, _from, :shutdown} -> :ok
+              {:symphony_stop_run, _reason} -> :ok
             end
           after
             File.rm(worker_alive_marker)
@@ -605,9 +614,17 @@ defmodule SymphonyElixir.CoreTest do
 
       updated_state = Orchestrator.reconcile_issue_states_for_test([issue], state)
 
-      refute Map.has_key?(updated_state.running, issue_id)
-      refute MapSet.member?(updated_state.claimed, issue_id)
-      refute Process.alive?(agent_pid)
+      # Cleanup waits for the agent to exit; the stop request has been sent and the workspace stands.
+      assert %{stopping: %{reason: :issue_terminal, cleanup_workspace: true}} = updated_state.running[issue_id]
+      assert MapSet.member?(updated_state.claimed, issue_id)
+      assert File.exists?(workspace)
+      assert eventually_value(fn -> if not Process.alive?(agent_pid), do: true end)
+      refute File.exists?(worker_alive_marker)
+
+      finished_state = Orchestrator.agent_down_for_test(updated_state, issue_id, :normal)
+
+      refute Map.has_key?(finished_state.running, issue_id)
+      refute MapSet.member?(finished_state.claimed, issue_id)
       assert File.read!(cleanup_marker) == "stopped"
       refute File.exists?(workspace)
     after
@@ -673,7 +690,11 @@ defmodule SymphonyElixir.CoreTest do
         labels: []
       }
 
-      _updated_state = Orchestrator.reconcile_issue_states_for_test([issue], state)
+      updated_state = Orchestrator.reconcile_issue_states_for_test([issue], state)
+      assert File.exists?(old_workspace)
+
+      send(agent_pid, :stop)
+      _finished_state = Orchestrator.agent_down_for_test(updated_state, issue_id, :normal)
 
       refute File.exists?(old_workspace)
       assert File.exists?(new_workspace)
@@ -725,7 +746,7 @@ defmodule SymphonyElixir.CoreTest do
       agent_pid =
         spawn(fn ->
           receive do
-            :stop -> :ok
+            {:symphony_stop_run, _reason} -> :ok
           end
         end)
 
@@ -741,13 +762,13 @@ defmodule SymphonyElixir.CoreTest do
 
       :sys.replace_state(pid, fn _ ->
         initial_state
-        |> Map.put(:running, %{issue_id => running_entry})
+        |> Map.put(:running, %{issue_id => %{running_entry | ref: Process.monitor(agent_pid)}})
         |> Map.put(:claimed, MapSet.new([issue_id]))
         |> Map.put(:retry_attempts, %{})
       end)
 
       send(pid, :tick)
-      Process.sleep(100)
+      Process.sleep(300)
       state = :sys.get_state(pid)
 
       refute Map.has_key?(state.running, issue_id)
@@ -842,9 +863,16 @@ defmodule SymphonyElixir.CoreTest do
 
     updated_state = Orchestrator.reconcile_issue_states_for_test([issue], state)
 
-    refute Map.has_key?(updated_state.running, issue_id)
-    refute MapSet.member?(updated_state.claimed, issue_id)
-    refute Process.alive?(agent_pid)
+    assert %{stopping: %{reason: :issue_inactive, cleanup_workspace: false}} = updated_state.running[issue_id]
+    assert MapSet.member?(updated_state.claimed, issue_id)
+    assert {:messages, [{:symphony_stop_run, :issue_inactive}]} = Process.info(agent_pid, :messages)
+    assert Process.alive?(agent_pid)
+
+    send(agent_pid, :stop)
+    finished_state = Orchestrator.agent_down_for_test(updated_state, issue_id, :normal)
+
+    refute Map.has_key?(finished_state.running, issue_id)
+    refute MapSet.member?(finished_state.claimed, issue_id)
   end
 
   test "reconcile stops running issue when a required label is removed" do
@@ -889,9 +917,16 @@ defmodule SymphonyElixir.CoreTest do
 
     updated_state = Orchestrator.reconcile_issue_states_for_test([issue], state)
 
-    refute Map.has_key?(updated_state.running, issue_id)
-    refute MapSet.member?(updated_state.claimed, issue_id)
-    refute Process.alive?(agent_pid)
+    assert %{stopping: %{reason: :issue_inactive, cleanup_workspace: false}} = updated_state.running[issue_id]
+    assert MapSet.member?(updated_state.claimed, issue_id)
+    assert {:messages, [{:symphony_stop_run, :issue_inactive}]} = Process.info(agent_pid, :messages)
+    assert Process.alive?(agent_pid)
+
+    send(agent_pid, :stop)
+    finished_state = Orchestrator.agent_down_for_test(updated_state, issue_id, :normal)
+
+    refute Map.has_key?(finished_state.running, issue_id)
+    refute MapSet.member?(finished_state.claimed, issue_id)
   end
 
   test "reconcile releases a blocked issue when a required label is removed" do
