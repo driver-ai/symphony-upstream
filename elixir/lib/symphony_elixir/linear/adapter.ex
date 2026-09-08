@@ -17,7 +17,7 @@ defmodule SymphonyElixir.Linear.Adapter do
       not present_string?(tracker_settings.api_key) ->
         {:error, :missing_linear_api_token}
 
-      not present_string?(tracker_settings.project_slug) ->
+      not present_slugs?(tracker_settings.project_slug) ->
         {:error, :missing_linear_project_slug}
 
       not is_nil(tracker_settings.assignee) and not present_string?(tracker_settings.assignee) ->
@@ -54,4 +54,8 @@ defmodule SymphonyElixir.Linear.Adapter do
 
   defp present_string?(value) when is_binary(value), do: String.trim(value) != ""
   defp present_string?(_value), do: false
+
+  # Config stores `project_slug` as a list; the scope is usable only when it names at least one slug.
+  defp present_slugs?([_ | _] = slugs), do: Enum.all?(slugs, &present_string?/1)
+  defp present_slugs?(_slugs), do: false
 end

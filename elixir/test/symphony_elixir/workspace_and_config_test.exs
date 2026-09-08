@@ -630,22 +630,55 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
     assert_receive {:fetch_issue_states_page, query,
                     %{
                       ids: ^first_batch_ids,
-                      projectSlug: "test-project",
+                      projectSlugs: ["test-project"],
                       first: 50,
                       relationFirst: 50
                     }}
 
     assert query =~ "SymphonyLinearIssuesById"
-    assert query =~ "projectSlug"
-    assert query =~ "slugId"
+    assert query =~ "$projectSlugs: [String!]!"
+    assert query =~ "project: {slugId: {in: $projectSlugs}}"
+    assert query =~ ~r/project \{\s*id\s*name\s*slugId\s*url\s*\}/
 
     assert_receive {:fetch_issue_states_page, ^query,
                     %{
                       ids: ^second_batch_ids,
-                      projectSlug: "test-project",
+                      projectSlugs: ["test-project"],
                       first: 5,
                       relationFirst: 50
                     }}
+  end
+
+  test "linear client carries the issue's project and tolerates its absence" do
+    raw_issue = %{
+      "id" => "issue-1",
+      "identifier" => "MT-1",
+      "title" => "With project",
+      "state" => %{"name" => "Todo"},
+      "project" => %{
+        "id" => "project-1",
+        "name" => "Symphony First Run",
+        "slugId" => "1987b1603b42",
+        "url" => "https://linear.app/example/project/symphony-first-run-1987b1603b42"
+      },
+      "labels" => %{"nodes" => []},
+      "inverseRelations" => %{"nodes" => []}
+    }
+
+    issue = Client.normalize_issue_for_test(raw_issue)
+
+    assert issue.project == %{
+             id: "project-1",
+             name: "Symphony First Run",
+             slug_id: "1987b1603b42",
+             url: "https://linear.app/example/project/symphony-first-run-1987b1603b42"
+           }
+
+    without_project = Client.normalize_issue_for_test(Map.delete(raw_issue, "project"))
+    assert without_project.identifier == "MT-1"
+    assert without_project.project == nil
+
+    assert Client.normalize_issue_for_test(Map.put(raw_issue, "project", %{"name" => "no id"})).project == nil
   end
 
   test "linear client logs response bodies for non-200 graphql responses" do
@@ -1251,7 +1284,7 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
 
     assert settings.tracker.endpoint == "https://linear.example.test/graphql"
     assert settings.tracker.api_key == "provider-token"
-    assert settings.tracker.project_slug == "provider-project"
+    assert settings.tracker.project_slug == ["provider-project"]
     assert settings.tracker.secret_environment_names == ["LINEAR_API_KEY"]
 
     assert settings.tracker.provider == %{
@@ -1262,6 +1295,34 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
              "delegate" => nil,
              "extra" => %{"team" => "platform"}
            }
+  end
+
+  test "linear provider project_slug accepts a list and rejects an empty scope" do
+    assert {:ok, settings} =
+             Schema.parse(%{
+               tracker: %{
+                 kind: "linear",
+                 provider: %{api_key: "token", project_slug: ["first", " second ", "first"]}
+               }
+             })
+
+    assert settings.tracker.project_slug == ["first", "second"]
+    assert settings.tracker.provider["project_slug"] == ["first", " second ", "first"]
+    assert :ok = Config.validate_settings(settings)
+
+    for empty_scope <- [[], [" "], ""] do
+      assert {:ok, empty_settings} =
+               Schema.parse(%{
+                 tracker: %{kind: "linear", provider: %{api_key: "token", project_slug: empty_scope}}
+               })
+
+      assert {:error, :missing_linear_project_slug} = Config.validate_settings(empty_settings)
+    end
+
+    assert {:error, {:invalid_workflow_config, _message}} =
+             Schema.parse(%{
+               tracker: %{kind: "linear", provider: %{api_key: "token"}, project_slug: ["ok", 7]}
+             })
   end
 
   test "linear adapter rejects invalid provider values without crashing config parsing" do

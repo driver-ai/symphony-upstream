@@ -71,7 +71,7 @@ defmodule SymphonyElixir.Codex.DynamicToolTest do
     assert_received {:bound_linear_client_called, "query Viewer { viewer { id } }", %{}, [tracker_settings: tracker_settings]}
 
     assert tracker_settings.api_key == "session-token"
-    assert tracker_settings.project_slug == "session-project"
+    assert tracker_settings.project_slug == ["session-project"]
     assert response["success"] == true
   end
 

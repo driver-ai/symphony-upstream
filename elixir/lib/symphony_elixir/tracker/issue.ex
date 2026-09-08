@@ -7,6 +7,8 @@ defmodule SymphonyElixir.Tracker.Issue do
   board or project entry. `native_ref` carries non-secret provider identifiers
   needed by provider-native agent tools. `identifier` remains the human-readable
   value used to derive the workspace key and must be unique within that scope.
+  `project` is the provider container the issue was read from (`id`, `name`,
+  `slug_id`, `url`), or `nil` when the adapter has none.
   """
 
   defstruct [
@@ -21,6 +23,7 @@ defmodule SymphonyElixir.Tracker.Issue do
     :url,
     :assignee_id,
     :delegate_id,
+    project: nil,
     blocked_by: [],
     labels: [],
     dispatchable: false,
@@ -40,6 +43,7 @@ defmodule SymphonyElixir.Tracker.Issue do
           url: String.t() | nil,
           assignee_id: String.t() | nil,
           delegate_id: String.t() | nil,
+          project: map() | nil,
           labels: [String.t()],
           blocked_by: [map()],
           dispatchable: boolean(),

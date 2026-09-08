@@ -184,6 +184,11 @@ Fields:
 - `assignee_id` (string or null)
 - `delegate_id` (string or null)
   - Tracker-provided agent delegate if available (Linear sets it when an issue is assigned to an agent).
+- `project` (object or null)
+  - The provider container the issue was read from, when the adapter's scope has one. Contains
+    `id` (string), `name` (string or null), `slug_id` (string or null), and `url` (string or null).
+  - Context for prompt rendering and workspace hooks, never a validity requirement: an adapter
+    without a container concept sets `null`.
 - `labels` (list of strings)
   - Normalized to lowercase.
 - `blocked_by` (list of blocker refs)
@@ -510,7 +515,10 @@ Rendering requirements:
 Template input variables:
 
 - `issue` (object)
-  - Includes all normalized issue fields, including labels and blockers.
+  - Includes all normalized issue fields, including labels, blockers, and `project`
+    (`issue.project.id`, `issue.project.name`, `issue.project.slug_id`, `issue.project.url`).
+    `issue.project` is `null` when the adapter supplies no container, so a template that reads its
+    members MUST guard for that or accept a rendering failure under strict variables.
 - `attempt` (integer or null)
   - `null`/absent on first attempt.
   - Integer on retry or continuation run.
@@ -1260,7 +1268,9 @@ Each adapter owns:
 
 - construction from the current effective tracker configuration, including active/terminal states;
 - endpoint, authentication, transport, timeouts, pagination, and rate-limit handling;
-- provider-specific scope selection (project, board, team, repository, query, or equivalent);
+- provider-specific scope selection (project, board, team, repository, query, or equivalent); a
+  scope MAY span several provider containers, in which case each issue's `project` names the one it
+  came from;
 - mapping provider payloads into the normalized Issue fields in Section 4.1.1;
 - choosing a stable dispatch identity and preserving any distinct underlying IDs in `native_ref`;
 - deriving `dispatchable` from provider-specific routing rules;

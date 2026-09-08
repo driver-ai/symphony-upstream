@@ -147,7 +147,24 @@ defmodule SymphonyElixir.CoreTest do
     )
 
     assert Config.settings!().tracker.api_key == env_api_key
-    assert Config.settings!().tracker.project_slug == "project"
+    assert Config.settings!().tracker.project_slug == ["project"]
+    assert :ok = Config.validate!()
+  end
+
+  test "linear project_slug accepts one slug or a list and always resolves to a list" do
+    write_workflow_file!(Workflow.workflow_file_path(),
+      tracker_project_slug: "project",
+      codex_command: "/bin/sh app-server"
+    )
+
+    assert Config.settings!().tracker.project_slug == ["project"]
+
+    write_workflow_file!(Workflow.workflow_file_path(),
+      tracker_project_slug: ["first", " second ", "first", ""],
+      codex_command: "/bin/sh app-server"
+    )
+
+    assert Config.settings!().tracker.project_slug == ["first", "second"]
     assert :ok = Config.validate!()
   end
 
@@ -1374,6 +1391,25 @@ defmodule SymphonyElixir.CoreTest do
     assert prompt =~ "Ticket S-1 Refactor backend request path"
     assert prompt =~ "labels=backend"
     assert prompt =~ "attempt=3"
+  end
+
+  test "prompt builder exposes the issue project to templates" do
+    write_workflow_file!(Workflow.workflow_file_path(),
+      prompt: "{{ issue.identifier }} project={{ issue.project.name }} slug={{ issue.project.slug_id }}"
+    )
+
+    issue = %Issue{
+      identifier: "S-2",
+      title: "Route by project",
+      state: "Todo",
+      project: %{id: "project-1", name: "Symphony First Run", slug_id: "1987b1603b42", url: nil}
+    }
+
+    assert PromptBuilder.build_prompt(issue) == "S-2 project=Symphony First Run slug=1987b1603b42"
+
+    write_workflow_file!(Workflow.workflow_file_path(), prompt: "{{ issue.identifier }} has no project reference")
+
+    assert PromptBuilder.build_prompt(%Issue{issue | project: nil}) == "S-2 has no project reference"
   end
 
   test "prompt builder renders issue datetime fields without crashing" do
