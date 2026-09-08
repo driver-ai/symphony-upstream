@@ -2,6 +2,7 @@
 tracker:
   kind: linear
   provider:
+    # One project slug ID, or a list to poll several projects with one runtime.
     project_slug: "symphony-0c79b11b75ea"
   required_labels: []
   active_states:

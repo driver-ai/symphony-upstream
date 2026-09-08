@@ -11,8 +11,8 @@ defmodule SymphonyElixir.Linear.Client do
   @max_error_body_log_bytes 1_000
 
   @query """
-  query SymphonyLinearPoll($projectSlug: String!, $stateNames: [String!]!, $first: Int!, $relationFirst: Int!, $after: String) {
-    issues(filter: {project: {slugId: {eq: $projectSlug}}, state: {name: {in: $stateNames}}}, first: $first, after: $after) {
+  query SymphonyLinearPoll($projectSlugs: [String!]!, $stateNames: [String!]!, $first: Int!, $relationFirst: Int!, $after: String) {
+    issues(filter: {project: {slugId: {in: $projectSlugs}}, state: {name: {in: $stateNames}}}, first: $first, after: $after) {
       nodes {
         id
         identifier
@@ -24,6 +24,12 @@ defmodule SymphonyElixir.Linear.Client do
         }
         branchName
         url
+        project {
+          id
+          name
+          slugId
+          url
+        }
         assignee {
           id
         }
@@ -59,8 +65,8 @@ defmodule SymphonyElixir.Linear.Client do
   """
 
   @query_by_ids """
-  query SymphonyLinearIssuesById($ids: [ID!]!, $projectSlug: String!, $first: Int!, $relationFirst: Int!) {
-    issues(filter: {id: {in: $ids}, project: {slugId: {eq: $projectSlug}}}, first: $first) {
+  query SymphonyLinearIssuesById($ids: [ID!]!, $projectSlugs: [String!]!, $first: Int!, $relationFirst: Int!) {
+    issues(filter: {id: {in: $ids}, project: {slugId: {in: $projectSlugs}}}, first: $first) {
       nodes {
         id
         identifier
@@ -72,6 +78,12 @@ defmodule SymphonyElixir.Linear.Client do
         }
         branchName
         url
+        project {
+          id
+          name
+          slugId
+          url
+        }
         assignee {
           id
         }
@@ -225,18 +237,18 @@ defmodule SymphonyElixir.Linear.Client do
         {:ok, []}
 
       ids ->
-        do_fetch_issue_states(ids, "test-project", nil, graphql_fun)
+        do_fetch_issue_states(ids, ["test-project"], nil, graphql_fun)
     end
   end
 
-  defp do_fetch_by_states(project_slug, state_names, assignee_filter) do
-    do_fetch_by_states_page(project_slug, state_names, assignee_filter, nil, [])
+  defp do_fetch_by_states(project_slugs, state_names, assignee_filter) do
+    do_fetch_by_states_page(project_slugs, state_names, assignee_filter, nil, [])
   end
 
-  defp do_fetch_by_states_page(project_slug, state_names, assignee_filter, after_cursor, acc_issues) do
+  defp do_fetch_by_states_page(project_slugs, state_names, assignee_filter, after_cursor, acc_issues) do
     with {:ok, body} <-
            graphql(@query, %{
-             projectSlug: project_slug,
+             projectSlugs: project_slugs,
              stateNames: state_names,
              first: @issue_page_size,
              relationFirst: @issue_page_size,
@@ -247,7 +259,7 @@ defmodule SymphonyElixir.Linear.Client do
 
       case next_page_cursor(page_info) do
         {:ok, next_cursor} ->
-          do_fetch_by_states_page(project_slug, state_names, assignee_filter, next_cursor, updated_acc)
+          do_fetch_by_states_page(project_slugs, state_names, assignee_filter, next_cursor, updated_acc)
 
         :done ->
           {:ok, finalize_paginated_issues(updated_acc)}
@@ -264,29 +276,29 @@ defmodule SymphonyElixir.Linear.Client do
 
   defp finalize_paginated_issues(acc_issues) when is_list(acc_issues), do: Enum.reverse(acc_issues)
 
-  defp do_fetch_issue_states(ids, project_slug, assignee_filter) do
-    do_fetch_issue_states(ids, project_slug, assignee_filter, &graphql/2)
+  defp do_fetch_issue_states(ids, project_slugs, assignee_filter) do
+    do_fetch_issue_states(ids, project_slugs, assignee_filter, &graphql/2)
   end
 
-  defp do_fetch_issue_states(ids, project_slug, assignee_filter, graphql_fun)
-       when is_list(ids) and is_binary(project_slug) and is_function(graphql_fun, 2) do
+  defp do_fetch_issue_states(ids, project_slugs, assignee_filter, graphql_fun)
+       when is_list(ids) and is_list(project_slugs) and is_function(graphql_fun, 2) do
     issue_order_index = issue_order_index(ids)
-    do_fetch_issue_states_page(ids, project_slug, assignee_filter, graphql_fun, [], issue_order_index)
+    do_fetch_issue_states_page(ids, project_slugs, assignee_filter, graphql_fun, [], issue_order_index)
   end
 
-  defp do_fetch_issue_states_page([], _project_slug, _assignee_filter, _graphql_fun, acc_issues, issue_order_index) do
+  defp do_fetch_issue_states_page([], _project_slugs, _assignee_filter, _graphql_fun, acc_issues, issue_order_index) do
     acc_issues
     |> finalize_paginated_issues()
     |> sort_issues_by_requested_ids(issue_order_index)
     |> then(&{:ok, &1})
   end
 
-  defp do_fetch_issue_states_page(ids, project_slug, assignee_filter, graphql_fun, acc_issues, issue_order_index) do
+  defp do_fetch_issue_states_page(ids, project_slugs, assignee_filter, graphql_fun, acc_issues, issue_order_index) do
     {batch_ids, rest_ids} = Enum.split(ids, @issue_page_size)
 
     case graphql_fun.(@query_by_ids, %{
            ids: batch_ids,
-           projectSlug: project_slug,
+           projectSlugs: project_slugs,
            first: length(batch_ids),
            relationFirst: @issue_page_size
          }) do
@@ -296,7 +308,7 @@ defmodule SymphonyElixir.Linear.Client do
 
           do_fetch_issue_states_page(
             rest_ids,
-            project_slug,
+            project_slugs,
             assignee_filter,
             graphql_fun,
             updated_acc,
@@ -493,6 +505,7 @@ defmodule SymphonyElixir.Linear.Client do
         url: issue["url"],
         assignee_id: assignee_field(assignee, "id"),
         delegate_id: assignee_field(delegate, "id"),
+        project: normalize_project(issue["project"]),
         blocked_by: blockers,
         labels: extract_labels(issue),
         dispatchable: dispatchable?(state_name, blockers, assignee, delegate, routing_filters),
@@ -506,6 +519,14 @@ defmodule SymphonyElixir.Linear.Client do
 
   defp assignee_field(%{} = assignee, field) when is_binary(field), do: assignee[field]
   defp assignee_field(_assignee, _field), do: nil
+
+  # The project is context for prompts and hooks, never a validity requirement: an issue without
+  # one stays a valid record with `project: nil`.
+  defp normalize_project(%{"id" => id} = project) when is_binary(id) and id != "" do
+    %{id: id, name: project["name"], slug_id: project["slugId"], url: project["url"]}
+  end
+
+  defp normalize_project(_project), do: nil
 
   # Linear hands an issue to an agent through `delegate` and keeps a person as `assignee`, so an
   # agent worker routes on `tracker.delegate` while a human-account worker routes on `tracker.assignee`.
@@ -581,7 +602,7 @@ defmodule SymphonyElixir.Linear.Client do
 
     cond do
       is_nil(tracker.api_key) -> {:error, :missing_linear_api_token}
-      is_nil(tracker.project_slug) -> {:error, :missing_linear_project_slug}
+      not (is_list(tracker.project_slug) and tracker.project_slug != []) -> {:error, :missing_linear_project_slug}
       true -> {:ok, tracker}
     end
   end

@@ -209,15 +209,19 @@ codex:
 
 - Config: use `tracker.kind: linear` with `tracker.provider.endpoint` (default
   `https://api.linear.app/graphql`), `api_key` (defaults to `LINEAR_API_KEY` and accepts
-  `$VAR`), required `project_slug`, optional `assignee` (a Linear user ID or `me`,
-  defaulting to `LINEAR_ASSIGNEE`), and optional `delegate` (same values, defaulting to
-  `LINEAR_DELEGATE`). Linear sets an issue's delegate when the issue is assigned to an agent and
-  keeps `assignee` for the responsible person, so an agent worker routes with `delegate: me`.
-  The legacy flat `tracker.endpoint`, `api_key`, `project_slug`, `assignee`, and `delegate` aliases remain
-  supported. `required_labels`, `active_states`, and `terminal_states` stay under `tracker`.
-- Scope and paging: candidate reads filter the configured project slug and requested state names,
-  following Linear pages of 50. ID refreshes are also project-scoped and batch up to 50 IDs. Empty
-  state/ID lists return `{:ok, []}` without a Linear request.
+  `$VAR`), required `project_slug` (one project slug ID or a list of them; the effective setting
+  is always a list of trimmed, non-blank, unique slugs, and an empty list fails validation),
+  optional `assignee` (a Linear user ID or `me`, defaulting to `LINEAR_ASSIGNEE`), and optional
+  `delegate` (same values, defaulting to `LINEAR_DELEGATE`). Linear sets an issue's delegate when
+  the issue is assigned to an agent and keeps `assignee` for the responsible person, so an agent
+  worker routes with `delegate: me`. The legacy flat `tracker.endpoint`, `api_key`, `project_slug`,
+  `assignee`, and `delegate` aliases remain supported. `required_labels`, `active_states`, and
+  `terminal_states` stay under `tracker`.
+- Scope and paging: candidate reads filter the configured project slugs (`slugId: {in: ...}`) and
+  requested state names, following Linear pages of 50. ID refreshes are also project-scoped and
+  batch up to 50 IDs. Empty state/ID lists return `{:ok, []}` without a Linear request. Each
+  issue's `project` (`id`, `name`, `slug_id`, `url`) is read alongside it so prompts and hooks can
+  tell which configured project an issue came from.
 - Identity and normalization: `issue.id` is the Linear issue ID and `issue.native_ref` is currently
   `nil`. Records missing a nonblank ID, identifier, title, or state are dropped from candidate
   pages and fail ID refreshes. State keeps Linear's spelling; integer priorities are preserved and

@@ -40,6 +40,37 @@ defmodule SymphonyElixir.Config.Schema do
     def dump(_value), do: :error
   end
 
+  defmodule StringOrList do
+    @moduledoc false
+    @behaviour Ecto.Type
+
+    @spec type() :: {:array, :string}
+    def type, do: {:array, :string}
+
+    @spec embed_as(term()) :: :self
+    def embed_as(_format), do: :self
+
+    @spec equal?(term(), term()) :: boolean()
+    def equal?(left, right), do: left == right
+
+    @spec cast(term()) :: {:ok, String.t() | [String.t()]} | :error
+    def cast(value) when is_binary(value), do: {:ok, value}
+
+    def cast(values) when is_list(values) do
+      if Enum.all?(values, &is_binary/1), do: {:ok, values}, else: :error
+    end
+
+    def cast(_value), do: :error
+
+    @spec load(term()) :: {:ok, String.t() | [String.t()]} | :error
+    def load(value) when is_binary(value) or is_list(value), do: {:ok, value}
+    def load(_value), do: :error
+
+    @spec dump(term()) :: {:ok, String.t() | [String.t()]} | :error
+    def dump(value) when is_binary(value) or is_list(value), do: {:ok, value}
+    def dump(_value), do: :error
+  end
+
   defmodule Tracker do
     @moduledoc false
     use Ecto.Schema
@@ -51,7 +82,8 @@ defmodule SymphonyElixir.Config.Schema do
       field(:kind, :string)
       field(:endpoint, :string)
       field(:api_key, :string)
-      field(:project_slug, :string)
+      # Written as one slug or a list; finalize_settings/1 always stores a list.
+      field(:project_slug, SymphonyElixir.Config.Schema.StringOrList)
       field(:assignee, :string)
       field(:delegate, :string)
       field(:provider, :map, default: %{})
@@ -451,7 +483,7 @@ defmodule SymphonyElixir.Config.Schema do
       settings.tracker
       | endpoint: Map.get(provider, "endpoint", settings.tracker.endpoint),
         api_key: api_key,
-        project_slug: Map.get(provider, "project_slug", settings.tracker.project_slug),
+        project_slug: normalize_project_slugs(Map.get(provider, "project_slug", settings.tracker.project_slug)),
         assignee: assignee,
         delegate: delegate,
         provider: provider,
@@ -485,6 +517,21 @@ defmodule SymphonyElixir.Config.Schema do
 
   defp normalize_optional_map(nil), do: nil
   defp normalize_optional_map(value) when is_map(value), do: normalize_keys(value)
+
+  # `project_slug` may be written as one slug or a list; adapters read a list of trimmed, non-blank,
+  # unique slugs. `nil` means unset and `[]` means nothing usable was given.
+  defp normalize_project_slugs(nil), do: nil
+  defp normalize_project_slugs(value) when is_binary(value), do: normalize_project_slugs([value])
+
+  defp normalize_project_slugs(values) when is_list(values) do
+    values
+    |> Enum.filter(&is_binary/1)
+    |> Enum.map(&String.trim/1)
+    |> Enum.reject(&(&1 == ""))
+    |> Enum.uniq()
+  end
+
+  defp normalize_project_slugs(_value), do: nil
 
   defp normalize_key(value) when is_atom(value), do: Atom.to_string(value)
   defp normalize_key(value), do: to_string(value)
