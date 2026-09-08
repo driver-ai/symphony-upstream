@@ -209,9 +209,11 @@ codex:
 
 - Config: use `tracker.kind: linear` with `tracker.provider.endpoint` (default
   `https://api.linear.app/graphql`), `api_key` (defaults to `LINEAR_API_KEY` and accepts
-  `$VAR`), required `project_slug`, and optional `assignee` (a Linear user ID or `me`,
-  defaulting to `LINEAR_ASSIGNEE`).
-  The legacy flat `tracker.endpoint`, `api_key`, `project_slug`, and `assignee` aliases remain
+  `$VAR`), required `project_slug`, optional `assignee` (a Linear user ID or `me`,
+  defaulting to `LINEAR_ASSIGNEE`), and optional `delegate` (same values, defaulting to
+  `LINEAR_DELEGATE`). Linear sets an issue's delegate when the issue is assigned to an agent and
+  keeps `assignee` for the responsible person, so an agent worker routes with `delegate: me`.
+  The legacy flat `tracker.endpoint`, `api_key`, `project_slug`, `assignee`, and `delegate` aliases remain
   supported. `required_labels`, `active_states`, and `terminal_states` stay under `tracker`.
 - Scope and paging: candidate reads filter the configured project slug and requested state names,
   following Linear pages of 50. ID refreshes are also project-scoped and batch up to 50 IDs. Empty
@@ -222,8 +224,8 @@ codex:
   other priority values become `nil`; RFC 3339 timestamps are parsed and unusable timestamps become
   `nil`. Labels are trimmed, lowercased, deduplicated, and blanks are dropped; blockers come from
   inverse `blocks` relations.
-- Dispatchability: the adapter marks an issue dispatchable only when optional assignee routing
-  matches and a `Todo` issue has no non-terminal blocker. The generic scheduler then applies
+- Dispatchability: the adapter marks an issue dispatchable only when the optional assignee and
+  delegate routing filters match and a `Todo` issue has no non-terminal blocker. The generic scheduler then applies
   active/terminal states, required labels, claims, retries, and concurrency.
 - Tool: the Linear adapter advertises `linear_graphql`, accepting either a raw query string or an
   object with nonblank `query` and optional object `variables`. Symphony executes it host-side
@@ -233,7 +235,7 @@ codex:
 - Responsibility and errors: `linear_graphql` adds no idempotency key, retry, scope guard, or
   rate-limit policy, so workflows own idempotent mutations and handling provider errors. Read/config
   failures use `{:error, :missing_linear_api_token}`, `{:error, :missing_linear_project_slug}`,
-  `{:error, :invalid_linear_endpoint}`, `{:error, :invalid_linear_assignee}`,
+  `{:error, :invalid_linear_endpoint}`, `{:error, :invalid_linear_assignee}`, `{:error, :invalid_linear_delegate}`,
   `{:error, :missing_linear_viewer_identity}`, `{:error, {:linear_api_status, status}}`,
   `{:error, {:linear_api_request, reason}}`, `{:error, {:linear_graphql_errors, errors}}`,
   `{:error, :linear_unknown_payload}`, or `{:error, :linear_missing_end_cursor}`. Tool results

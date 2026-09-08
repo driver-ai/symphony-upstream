@@ -182,6 +182,8 @@ Fields:
   - Tracker-provided branch metadata if available.
 - `url` (string or null)
 - `assignee_id` (string or null)
+- `delegate_id` (string or null)
+  - Tracker-provided agent delegate if available (Linear sets it when an issue is assigned to an agent).
 - `labels` (list of strings)
   - Normalized to lowercase.
 - `blocked_by` (list of blocker refs)
