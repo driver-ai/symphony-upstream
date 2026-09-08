@@ -936,6 +936,14 @@ Execution contract:
 - On POSIX systems, `sh -lc <script>` (or a stricter equivalent such as `bash -lc <script>`) is a
   conforming default.
 - Hook timeout uses `hooks.timeout_ms`; default: `60000 ms`.
+- Pass the issue to the hook through its environment: `SYMPHONY_ISSUE_ID`,
+  `SYMPHONY_ISSUE_IDENTIFIER`, `SYMPHONY_ISSUE_PROJECT_SLUG` (`issue.project.slug_id`), and
+  `SYMPHONY_ISSUE_PROJECT_NAME` (`issue.project.name`). A value the runtime does not know is left
+  unset, never set to an empty string. `after_create`, `before_run`, and `after_run` receive every
+  known value; `before_remove` runs without the issue and receives only
+  `SYMPHONY_ISSUE_IDENTIFIER`, taken from the workspace directory name. On a remote worker host the
+  variables are exported inside the remote command, since the SSH client's environment does not
+  reach the remote shell.
 - Log hook start, failures, and timeouts.
 
 Failure semantics:

@@ -338,13 +338,7 @@ defmodule SymphonyElixir.Workspace do
             :ok
 
           command ->
-            run_hook(
-              command,
-              workspace,
-              %{issue_id: nil, issue_identifier: Path.basename(workspace)},
-              "before_remove",
-              nil
-            )
+            run_hook(command, workspace, before_remove_context(workspace), "before_remove", nil)
             |> ignore_hook_failure()
         end
 
@@ -361,25 +355,23 @@ defmodule SymphonyElixir.Workspace do
         :ok
 
       command ->
+        issue_context = before_remove_context(workspace)
+
         script =
-          [
-            remote_shell_assign("workspace", workspace),
-            "if [ -d \"$workspace\" ]; then",
-            "  cd \"$workspace\"",
-            "  #{command}",
-            "fi"
-          ]
+          (hook_env_exports(issue_context) ++
+             [
+               remote_shell_assign("workspace", workspace),
+               "if [ -d \"$workspace\" ]; then",
+               "  cd \"$workspace\"",
+               "  #{command}",
+               "fi"
+             ])
           |> Enum.join("\n")
 
         run_remote_command(worker_host, script, Config.settings!().hooks.timeout_ms)
         |> case do
           {:ok, {output, status}} ->
-            handle_hook_command_result(
-              {output, status},
-              workspace,
-              %{issue_id: nil, issue_identifier: Path.basename(workspace)},
-              "before_remove"
-            )
+            handle_hook_command_result({output, status}, workspace, issue_context, "before_remove")
 
           {:error, {:workspace_hook_timeout, "before_remove", _timeout_ms} = reason} ->
             {:error, reason}
@@ -401,7 +393,7 @@ defmodule SymphonyElixir.Workspace do
 
     task =
       Task.async(fn ->
-        System.cmd("sh", ["-lc", command], cd: workspace, stderr_to_stdout: true)
+        System.cmd("sh", ["-lc", command], cd: workspace, env: hook_env(issue_context), stderr_to_stdout: true)
       end)
 
     case Task.yield(task, timeout_ms) do
@@ -422,7 +414,9 @@ defmodule SymphonyElixir.Workspace do
 
     Logger.info("Running workspace hook hook=#{hook_name} #{issue_log_context(issue_context)} workspace=#{workspace} worker_host=#{worker_host}")
 
-    case run_remote_command(worker_host, "cd #{shell_escape(workspace)} && #{command}", timeout_ms) do
+    remote_command = "#{hook_env_prefix(issue_context)}cd #{shell_escape(workspace)} && #{command}"
+
+    case run_remote_command(worker_host, remote_command, timeout_ms) do
       {:ok, cmd_result} ->
         handle_hook_command_result(cmd_result, workspace, issue_context, hook_name)
 
@@ -568,25 +562,60 @@ defmodule SymphonyElixir.Workspace do
   defp worker_host_for_log(nil), do: "local"
   defp worker_host_for_log(worker_host), do: worker_host
 
-  defp issue_context(%{id: issue_id, identifier: identifier}) do
+  defp issue_context(%{id: issue_id, identifier: identifier} = issue) do
+    project = Map.get(issue, :project)
+
     %{
       issue_id: issue_id,
-      issue_identifier: identifier || "issue"
+      issue_identifier: identifier || "issue",
+      project_slug: project_field(project, :slug_id),
+      project_name: project_field(project, :name)
     }
   end
 
   defp issue_context(identifier) when is_binary(identifier) do
-    %{
-      issue_id: nil,
-      issue_identifier: identifier
-    }
+    %{issue_id: nil, issue_identifier: identifier, project_slug: nil, project_name: nil}
   end
 
   defp issue_context(_identifier) do
-    %{
-      issue_id: nil,
-      issue_identifier: "issue"
-    }
+    %{issue_id: nil, issue_identifier: "issue", project_slug: nil, project_name: nil}
+  end
+
+  # Removal never has the issue in hand; the workspace basename is the identifier by construction.
+  defp before_remove_context(workspace) do
+    %{issue_id: nil, issue_identifier: Path.basename(workspace), project_slug: nil, project_name: nil}
+  end
+
+  defp project_field(%{} = project, key) when is_atom(key), do: Map.get(project, key)
+  defp project_field(_project, _key), do: nil
+
+  # Hooks learn which issue they serve through the environment; a value the runtime does not know
+  # is left unset rather than set to an empty string.
+  @hook_env_names [
+    issue_id: "SYMPHONY_ISSUE_ID",
+    issue_identifier: "SYMPHONY_ISSUE_IDENTIFIER",
+    project_slug: "SYMPHONY_ISSUE_PROJECT_SLUG",
+    project_name: "SYMPHONY_ISSUE_PROJECT_NAME"
+  ]
+
+  defp hook_env(issue_context) when is_map(issue_context) do
+    for {key, name} <- @hook_env_names,
+        value = Map.get(issue_context, key),
+        is_binary(value) and value != "",
+        do: {name, value}
+  end
+
+  # The SSH client's environment never reaches the remote shell, so remote hooks export the same
+  # variables inside the command itself.
+  defp hook_env_exports(issue_context) do
+    Enum.map(hook_env(issue_context), fn {name, value} -> "export #{name}=#{shell_escape(value)}" end)
+  end
+
+  defp hook_env_prefix(issue_context) do
+    case hook_env_exports(issue_context) do
+      [] -> ""
+      exports -> Enum.join(exports, " && ") <> " && "
+    end
   end
 
   defp issue_log_context(%{issue_id: issue_id, issue_identifier: issue_identifier}) do

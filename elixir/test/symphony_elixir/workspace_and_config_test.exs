@@ -40,6 +40,55 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
     end
   end
 
+  test "workspace hooks receive the issue and its project through the environment" do
+    test_root =
+      Path.join(
+        System.tmp_dir!(),
+        "symphony-elixir-workspace-hook-env-#{System.unique_integer([:positive])}"
+      )
+
+    try do
+      workspace_root = Path.join(test_root, "workspaces")
+      before_remove_env = Path.join(test_root, "before_remove.env")
+
+      write_workflow_file!(Workflow.workflow_file_path(),
+        workspace_root: workspace_root,
+        hook_after_create: "env | grep '^SYMPHONY_' | sort > after_create.env",
+        hook_before_run: "env | grep '^SYMPHONY_' | sort > before_run.env",
+        hook_before_remove: "env | grep '^SYMPHONY_' | sort > \"#{before_remove_env}\""
+      )
+
+      issue = %Issue{
+        id: "issue-env-1",
+        identifier: "MT-ENV",
+        project: %{id: "project-1", name: "Symphony First Run", slug_id: "1987b1603b42", url: nil}
+      }
+
+      assert {:ok, workspace} = Workspace.create_for_issue(issue)
+
+      assert File.read!(Path.join(workspace, "after_create.env")) ==
+               Enum.join(
+                 [
+                   "SYMPHONY_ISSUE_ID=issue-env-1",
+                   "SYMPHONY_ISSUE_IDENTIFIER=MT-ENV",
+                   "SYMPHONY_ISSUE_PROJECT_NAME=Symphony First Run",
+                   "SYMPHONY_ISSUE_PROJECT_SLUG=1987b1603b42"
+                 ],
+                 "\n"
+               ) <> "\n"
+
+      assert :ok = Workspace.run_before_run_hook(workspace, %Issue{issue | project: nil})
+
+      assert File.read!(Path.join(workspace, "before_run.env")) ==
+               "SYMPHONY_ISSUE_ID=issue-env-1\nSYMPHONY_ISSUE_IDENTIFIER=MT-ENV\n"
+
+      assert :ok = Workspace.remove_issue_workspaces(issue)
+      assert File.read!(before_remove_env) == "SYMPHONY_ISSUE_IDENTIFIER=MT-ENV\n"
+    after
+      File.rm_rf(test_root)
+    end
+  end
+
   test "workspace path is deterministic per issue identifier" do
     workspace_root =
       Path.join(
@@ -1772,6 +1821,17 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
       assert trace =~ "echo before-run"
       assert trace =~ "echo after-run"
       assert trace =~ "echo before-remove"
+
+      # The fake ssh records the command after bash -lc quoting, so single quotes appear escaped.
+      escaped_workspace = Regex.escape(workspace_path)
+
+      assert trace =~
+               ~r/export SYMPHONY_ISSUE_IDENTIFIER=\S*MT-SSH-WS\S* && cd \S*#{escaped_workspace}\S* && echo before-run/
+
+      assert trace =~ ~r/export SYMPHONY_ISSUE_IDENTIFIER=\S*MT-SSH-WS\S* && cd \S*#{escaped_workspace}\S* && echo after-run/
+      assert trace =~ ~r/export SYMPHONY_ISSUE_IDENTIFIER=\S*MT-SSH-WS\S*\nworkspace=/
+      refute trace =~ "SYMPHONY_ISSUE_ID="
+      refute trace =~ "SYMPHONY_ISSUE_PROJECT"
       assert trace =~ "rm -rf"
       assert trace =~ workspace_path
     after

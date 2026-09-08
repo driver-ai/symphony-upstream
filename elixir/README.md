@@ -176,6 +176,10 @@ Notes:
   `git clone ... .` there, along with any other setup commands you need.
 - If a hook needs `mise exec` inside a freshly cloned workspace, trust the repo config and fetch
   the project dependencies in `hooks.after_create` before invoking `mise` later from other hooks.
+- Hooks read the issue they serve from `SYMPHONY_ISSUE_ID`, `SYMPHONY_ISSUE_IDENTIFIER`,
+  `SYMPHONY_ISSUE_PROJECT_SLUG`, and `SYMPHONY_ISSUE_PROJECT_NAME` (unset when unknown), so an
+  `after_create` hook can pick the repository to clone from the issue's Linear project.
+  `hooks.before_remove` sees only `SYMPHONY_ISSUE_IDENTIFIER`.
 - For the Linear adapter, `tracker.provider.api_key` reads from `LINEAR_API_KEY` when unset or
   when value is `$LINEAR_API_KEY`. The legacy flat `tracker.api_key` alias behaves the same way.
 - Do not put a literal tracker token in a repo-owned `WORKFLOW.md` if Codex can read that
