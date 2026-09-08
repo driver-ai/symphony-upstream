@@ -17,6 +17,7 @@ defmodule SymphonyElixir.CoreTest do
     assert config.tracker.active_states == ["Todo", "In Progress"]
     assert config.tracker.terminal_states == ["Closed", "Cancelled", "Canceled", "Duplicate", "Done"]
     assert config.tracker.assignee == nil
+    assert config.tracker.delegate == nil
     assert config.agent.max_turns == 20
 
     write_workflow_file!(Workflow.workflow_file_path(), poll_interval_ms: "invalid")
@@ -164,6 +165,22 @@ defmodule SymphonyElixir.CoreTest do
     )
 
     assert Config.settings!().tracker.assignee == env_assignee
+  end
+
+  test "linear delegate resolves from LINEAR_DELEGATE env var" do
+    previous_linear_delegate = System.get_env("LINEAR_DELEGATE")
+    env_delegate = "me"
+
+    on_exit(fn -> restore_env("LINEAR_DELEGATE", previous_linear_delegate) end)
+    System.put_env("LINEAR_DELEGATE", env_delegate)
+
+    write_workflow_file!(Workflow.workflow_file_path(),
+      tracker_delegate: nil,
+      tracker_project_slug: "project",
+      codex_command: "/bin/sh app-server"
+    )
+
+    assert Config.settings!().tracker.delegate == env_delegate
   end
 
   test "workflow file path defaults to WORKFLOW.md in the current working directory when app env is unset" do

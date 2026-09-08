@@ -27,6 +27,9 @@ defmodule SymphonyElixir.Linear.Client do
         assignee {
           id
         }
+        delegate {
+          id
+        }
         labels {
           nodes {
             name
@@ -72,6 +75,9 @@ defmodule SymphonyElixir.Linear.Client do
         assignee {
           id
         }
+        delegate {
+          id
+        }
         labels {
           nodes {
             name
@@ -114,8 +120,8 @@ defmodule SymphonyElixir.Linear.Client do
 
       states ->
         with {:ok, tracker} <- configured_tracker_for_read(),
-             {:ok, assignee_filter} <- routing_assignee_filter() do
-          do_fetch_by_states(tracker.project_slug, states, assignee_filter)
+             {:ok, routing_filters} <- routing_filters() do
+          do_fetch_by_states(tracker.project_slug, states, routing_filters)
         end
     end
   end
@@ -130,8 +136,8 @@ defmodule SymphonyElixir.Linear.Client do
 
       ids ->
         with {:ok, tracker} <- configured_tracker_for_read(),
-             {:ok, assignee_filter} <- routing_assignee_filter() do
-          do_fetch_issue_states(ids, tracker.project_slug, assignee_filter)
+             {:ok, routing_filters} <- routing_filters() do
+          do_fetch_issue_states(ids, tracker.project_slug, routing_filters)
         end
     end
   end
@@ -174,20 +180,26 @@ defmodule SymphonyElixir.Linear.Client do
   @doc false
   @spec normalize_issue_for_test(map(), String.t() | nil) :: Issue.t() | nil
   def normalize_issue_for_test(issue, assignee) when is_map(issue) do
-    assignee_filter =
-      case assignee do
-        value when is_binary(value) ->
-          case build_assignee_filter(value) do
-            {:ok, filter} -> filter
-            {:error, _reason} -> nil
-          end
-
-        _ ->
-          nil
-      end
-
-    normalize_issue(issue, assignee_filter)
+    normalize_issue_for_test(issue, assignee, nil)
   end
+
+  @doc false
+  @spec normalize_issue_for_test(map(), String.t() | nil, String.t() | nil) :: Issue.t() | nil
+  def normalize_issue_for_test(issue, assignee, delegate) when is_map(issue) do
+    normalize_issue(issue, %{
+      assignee: routing_filter_for_test(assignee),
+      delegate: routing_filter_for_test(delegate)
+    })
+  end
+
+  defp routing_filter_for_test(value) when is_binary(value) do
+    case build_assignee_filter(value) do
+      {:ok, filter} -> filter
+      {:error, _reason} -> nil
+    end
+  end
+
+  defp routing_filter_for_test(_value), do: nil
 
   @doc false
   @spec next_page_cursor_for_test(map()) :: {:ok, String.t()} | :done | {:error, term()}
@@ -462,11 +474,12 @@ defmodule SymphonyElixir.Linear.Client do
   defp next_page_cursor(%{has_next_page: true}), do: {:error, :linear_missing_end_cursor}
   defp next_page_cursor(_), do: :done
 
-  defp normalize_issue(issue, assignee_filter) when is_map(issue) do
+  defp normalize_issue(issue, routing_filters) when is_map(issue) do
     state_name = get_in(issue, ["state", "name"])
 
     if Enum.all?([issue["id"], issue["identifier"], issue["title"], state_name], &present_string?/1) do
       assignee = issue["assignee"]
+      delegate = issue["delegate"]
       blockers = extract_blockers(issue)
 
       %Issue{
@@ -479,24 +492,32 @@ defmodule SymphonyElixir.Linear.Client do
         branch_name: issue["branchName"],
         url: issue["url"],
         assignee_id: assignee_field(assignee, "id"),
+        delegate_id: assignee_field(delegate, "id"),
         blocked_by: blockers,
         labels: extract_labels(issue),
-        dispatchable: dispatchable?(state_name, blockers, assignee, assignee_filter),
+        dispatchable: dispatchable?(state_name, blockers, assignee, delegate, routing_filters),
         created_at: parse_datetime(issue["createdAt"]),
         updated_at: parse_datetime(issue["updatedAt"])
       }
     end
   end
 
-  defp normalize_issue(_issue, _assignee_filter), do: nil
+  defp normalize_issue(_issue, _routing_filters), do: nil
 
   defp assignee_field(%{} = assignee, field) when is_binary(field), do: assignee[field]
   defp assignee_field(_assignee, _field), do: nil
 
-  defp dispatchable?(state_name, blockers, assignee, assignee_filter) do
-    assigned_to_worker?(assignee, assignee_filter) and
+  # Linear hands an issue to an agent through `delegate` and keeps a person as `assignee`, so an
+  # agent worker routes on `tracker.delegate` while a human-account worker routes on `tracker.assignee`.
+  # Each configured filter must match; an unset filter matches anything.
+  defp dispatchable?(state_name, blockers, assignee, delegate, routing_filters) do
+    assigned_to_worker?(assignee, routing_filter(routing_filters, :assignee)) and
+      assigned_to_worker?(delegate, routing_filter(routing_filters, :delegate)) and
       not blocked_before_dispatch?(state_name, blockers)
   end
+
+  defp routing_filter(%{} = routing_filters, key) when is_atom(key), do: Map.get(routing_filters, key)
+  defp routing_filter(_routing_filters, _key), do: nil
 
   defp blocked_before_dispatch?(state_name, blockers)
        when is_binary(state_name) and is_list(blockers) do
@@ -543,15 +564,17 @@ defmodule SymphonyElixir.Linear.Client do
 
   defp assignee_id(%{} = assignee), do: normalize_assignee_match_value(assignee["id"])
 
-  defp routing_assignee_filter do
-    case Config.settings!().tracker.assignee do
-      nil ->
-        {:ok, nil}
+  defp routing_filters do
+    tracker = Config.settings!().tracker
 
-      assignee ->
-        build_assignee_filter(assignee)
+    with {:ok, assignee_filter} <- build_routing_filter(tracker.assignee),
+         {:ok, delegate_filter} <- build_routing_filter(tracker.delegate) do
+      {:ok, %{assignee: assignee_filter, delegate: delegate_filter}}
     end
   end
+
+  defp build_routing_filter(nil), do: {:ok, nil}
+  defp build_routing_filter(value) when is_binary(value), do: build_assignee_filter(value)
 
   defp configured_tracker_for_read do
     tracker = Config.settings!().tracker

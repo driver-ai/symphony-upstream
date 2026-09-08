@@ -23,6 +23,9 @@ defmodule SymphonyElixir.Linear.Adapter do
       not is_nil(tracker_settings.assignee) and not present_string?(tracker_settings.assignee) ->
         {:error, :invalid_linear_assignee}
 
+      not is_nil(tracker_settings.delegate) and not present_string?(tracker_settings.delegate) ->
+        {:error, :invalid_linear_delegate}
+
       true ->
         :ok
     end

@@ -439,7 +439,7 @@ defmodule SymphonyElixir.Orchestrator do
         terminate_running_issue(state, issue.id, true)
 
       !issue_routable?(issue) ->
-        Logger.info("Issue no longer routed to this worker: #{issue_context(issue)} assignee=#{inspect(issue.assignee_id)}; stopping active agent")
+        Logger.info("Issue no longer routed to this worker: #{issue_context(issue)} assignee=#{inspect(issue.assignee_id)} delegate=#{inspect(issue.delegate_id)}; stopping active agent")
 
         terminate_running_issue(state, issue.id, false)
 
@@ -474,7 +474,7 @@ defmodule SymphonyElixir.Orchestrator do
         release_issue_claim(state, issue.id)
 
       !issue_routable?(issue) ->
-        Logger.info("Blocked issue no longer routed to this worker: #{issue_context(issue)} assignee=#{inspect(issue.assignee_id)}; releasing block")
+        Logger.info("Blocked issue no longer routed to this worker: #{issue_context(issue)} assignee=#{inspect(issue.assignee_id)} delegate=#{inspect(issue.delegate_id)}; releasing block")
         release_issue_claim(state, issue.id)
 
       active_issue_state?(issue.state, active_states) ->

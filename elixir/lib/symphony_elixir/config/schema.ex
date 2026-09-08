@@ -53,6 +53,7 @@ defmodule SymphonyElixir.Config.Schema do
       field(:api_key, :string)
       field(:project_slug, :string)
       field(:assignee, :string)
+      field(:delegate, :string)
       field(:provider, :map, default: %{})
       field(:secret_environment_names, {:array, :string}, default: [])
       field(:required_labels, {:array, :string}, default: [])
@@ -71,6 +72,7 @@ defmodule SymphonyElixir.Config.Schema do
           :api_key,
           :project_slug,
           :assignee,
+          :delegate,
           :provider,
           :required_labels,
           :active_states,
@@ -401,7 +403,7 @@ defmodule SymphonyElixir.Config.Schema do
   defp finalize_settings(settings) do
     provider = normalize_optional_map(settings.tracker.provider) || %{}
 
-    {api_key, assignee, provider, secret_environment_names} =
+    {api_key, assignee, delegate, provider, secret_environment_names} =
       case settings.tracker.kind do
         "linear" ->
           linear_provider =
@@ -410,6 +412,7 @@ defmodule SymphonyElixir.Config.Schema do
             |> Map.put_new("api_key", settings.tracker.api_key)
             |> Map.put_new("project_slug", settings.tracker.project_slug)
             |> Map.put_new("assignee", settings.tracker.assignee)
+            |> Map.put_new("delegate", settings.tracker.delegate)
 
           resolved_api_key =
             resolve_secret_setting(linear_provider["api_key"], System.get_env("LINEAR_API_KEY"))
@@ -417,15 +420,19 @@ defmodule SymphonyElixir.Config.Schema do
           resolved_assignee =
             resolve_secret_setting(linear_provider["assignee"], System.get_env("LINEAR_ASSIGNEE"))
 
+          resolved_delegate =
+            resolve_secret_setting(linear_provider["delegate"], System.get_env("LINEAR_DELEGATE"))
+
           {
             resolved_api_key,
             resolved_assignee,
+            resolved_delegate,
             linear_provider,
             ["LINEAR_API_KEY" | env_reference_names([linear_provider["api_key"]])]
           }
 
         _ ->
-          {settings.tracker.api_key, settings.tracker.assignee, provider, []}
+          {settings.tracker.api_key, settings.tracker.assignee, settings.tracker.delegate, provider, []}
       end
 
     {active_states, terminal_states} =
@@ -446,6 +453,7 @@ defmodule SymphonyElixir.Config.Schema do
         api_key: api_key,
         project_slug: Map.get(provider, "project_slug", settings.tracker.project_slug),
         assignee: assignee,
+        delegate: delegate,
         provider: provider,
         secret_environment_names: Enum.uniq(secret_environment_names),
         active_states: active_states,

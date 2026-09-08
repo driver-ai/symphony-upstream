@@ -538,6 +538,43 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
     refute issue.dispatchable
   end
 
+  test "linear client routes a delegated issue to the worker by its delegate" do
+    raw_issue = %{
+      "id" => "issue-100",
+      "identifier" => "MT-100",
+      "title" => "Handed to the agent",
+      "state" => %{"name" => "Todo"},
+      "assignee" => %{"id" => "human-1"},
+      "delegate" => %{"id" => "agent-1"}
+    }
+
+    issue = Client.normalize_issue_for_test(raw_issue, nil, "agent-1")
+
+    assert issue.assignee_id == "human-1"
+    assert issue.delegate_id == "agent-1"
+    assert issue.dispatchable
+
+    refute Client.normalize_issue_for_test(raw_issue, nil, "agent-2").dispatchable
+    refute Client.normalize_issue_for_test(raw_issue, "agent-1", nil).dispatchable
+  end
+
+  test "linear client does not route an undelegated issue when delegate routing is configured" do
+    raw_issue = %{
+      "id" => "issue-101",
+      "identifier" => "MT-101",
+      "title" => "Nobody's agent task",
+      "state" => %{"name" => "Todo"},
+      "assignee" => %{"id" => "human-1"}
+    }
+
+    issue = Client.normalize_issue_for_test(raw_issue, nil, "agent-1")
+
+    assert issue.delegate_id == nil
+    refute issue.dispatchable
+
+    assert Client.normalize_issue_for_test(raw_issue, nil, nil).dispatchable
+  end
+
   test "linear client pagination merge helper preserves issue ordering" do
     issue_page_1 = [
       %Issue{id: "issue-1", identifier: "MT-1"},
@@ -1222,6 +1259,7 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
              "api_key" => "provider-token",
              "project_slug" => "provider-project",
              "assignee" => nil,
+             "delegate" => nil,
              "extra" => %{"team" => "platform"}
            }
   end
@@ -1259,6 +1297,17 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
 
     assert {:error, :invalid_linear_assignee} =
              Config.validate_settings(invalid_assignee_settings)
+
+    assert {:ok, invalid_delegate_settings} =
+             Schema.parse(%{
+               tracker: %{
+                 kind: "linear",
+                 provider: %{api_key: "token", project_slug: "project", delegate: 123}
+               }
+             })
+
+    assert {:error, :invalid_linear_delegate} =
+             Config.validate_settings(invalid_delegate_settings)
   end
 
   test "schema does not inject linear defaults before an adapter is selected" do
