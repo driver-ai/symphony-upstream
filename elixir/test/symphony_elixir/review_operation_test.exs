@@ -21,7 +21,7 @@ defmodule SymphonyElixir.ReviewOperationTest do
       import json, sys, time
       request = json.load(open(sys.argv[2]))
       with open(request["state_root"] + "/invocations", "a") as calls:
-          calls.write(request["operation"] + "\n")
+          calls.write(request["operation"] + "\\n")
       common = {"protocol_version": 1, "request_id": request["request_id"], "issue_id": request["issue"]["id"], "run_id": "run-1"}
       print(json.dumps({**common, "event": "accepted"}), flush=True)
       time.sleep(0.1)
