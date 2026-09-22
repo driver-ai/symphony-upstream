@@ -86,9 +86,9 @@ defmodule SymphonyElixir.ReviewOperation do
   end
 
   @impl true
-  def handle_info({:review_event, issue_id, event}, state) do
+  def handle_info({:review_event, issue_id, %{"event" => "accepted"} = event}, state) do
     case Map.get(state, issue_id) do
-      %{from: from} = active when event["event"] == "accepted" ->
+      %{from: from} = active ->
         GenServer.reply(from, {:ok, event})
         {:noreply, Map.put(state, issue_id, %{active | from: nil, run_id: event["run_id"]})}
 
@@ -96,6 +96,8 @@ defmodule SymphonyElixir.ReviewOperation do
         {:noreply, state}
     end
   end
+
+  def handle_info({:review_event, _issue_id, _event}, state), do: {:noreply, state}
 
   def handle_info({:DOWN, monitor, :process, _pid, reason}, state) do
     case Enum.find(state, fn {_issue_id, active} -> active[:monitor] == monitor end) do
