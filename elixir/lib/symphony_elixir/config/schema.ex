@@ -544,13 +544,7 @@ defmodule SymphonyElixir.Config.Schema do
         turn_sandbox_policy: normalize_optional_map(settings.codex.turn_sandbox_policy)
     }
 
-    review = %{
-      settings.review
-      | executable: normalize_optional_path(settings.review.executable),
-        state_root: normalize_optional_path(settings.review.state_root)
-    }
-
-    %{settings | tracker: tracker, workspace: workspace, review: review, codex: codex}
+    %{settings | tracker: tracker, workspace: workspace, codex: codex}
   end
 
   defp normalize_keys(value) when is_map(value) do
@@ -618,9 +612,6 @@ defmodule SymphonyElixir.Config.Schema do
         path
     end
   end
-
-  defp normalize_optional_path(nil), do: nil
-  defp normalize_optional_path(value), do: resolve_path_value(value, value)
 
   defp resolve_env_value(value, fallback) when is_binary(value) do
     case env_reference_name(value) do

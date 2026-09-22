@@ -6,7 +6,6 @@ defmodule SymphonyElixir.Linear.AgentTool do
 
   @raw_tool "linear_graphql"
   @typed_tools ~w(symphony_review linear_read linear_comment linear_attach_pr linear_transition)
-  @protected_state_names ["in review", "merging", "done"]
 
   @spec execute(String.t() | nil, term(), keyword()) :: map()
   def execute(tool, arguments, opts) do
@@ -136,8 +135,9 @@ defmodule SymphonyElixir.Linear.AgentTool do
 
   defp maybe_verify_handoff(state, opts) do
     normalized = state["name"] |> to_string() |> String.trim() |> String.downcase()
+    active_states = Keyword.fetch!(opts, :tracker_settings).active_states |> Enum.map(&String.downcase/1)
 
-    if normalized in @protected_state_names or state["type"] == "completed" do
+    if normalized not in active_states or state["type"] == "completed" do
       with {:ok, issue} <- fetch_authoritative_issue(opts),
            {:ok, result} <- review_module(opts).execute("verify", nil, review_context(issue, opts), Keyword.fetch!(opts, :review)),
            true <- complete_result?(result) or {:error, {:review_incomplete, result["reason"]}} do
@@ -149,7 +149,10 @@ defmodule SymphonyElixir.Linear.AgentTool do
   end
 
   defp complete_result?(%{"event" => "result", "status" => "complete", "evidence" => evidence}) when is_map(evidence) do
-    Enum.all?(~w(plan_revision plan_hash repository base head context_fingerprint method_fingerprint config_fingerprint receipts), &Map.has_key?(evidence, &1))
+    string_fields = ~w(plan_revision plan_hash repository base head context_fingerprint method_fingerprint config_fingerprint)
+
+    Enum.all?(string_fields, &(is_binary(evidence[&1]) and evidence[&1] != "")) and
+      is_list(evidence["receipts"])
   end
 
   defp complete_result?(_result), do: false
@@ -186,7 +189,14 @@ defmodule SymphonyElixir.Linear.AgentTool do
     end
   end
 
-  defp review_context(issue, opts), do: %{issue: issue, workspace: Keyword.fetch!(opts, :workspace), thread_id: Keyword.fetch!(opts, :thread_id), session_id: Keyword.fetch!(opts, :session_id)}
+  defp review_context(issue, opts),
+    do: %{
+      issue: issue,
+      workspace: Keyword.fetch!(opts, :workspace),
+      repository: Keyword.fetch!(opts, :repository),
+      thread_id: Keyword.fetch!(opts, :thread_id),
+      session_id: Keyword.fetch!(opts, :session_id)
+    }
   defp review_module(opts), do: Keyword.get(opts, :review_module, ReviewOperation)
 
   defp bound_issue_id(opts) do
@@ -281,27 +291,12 @@ defmodule SymphonyElixir.Linear.AgentTool do
          [owner, repo, "pull", number] <- String.split(String.trim(path, "/"), "/"),
          {_number, ""} <- Integer.parse(number),
          true <-
-           String.downcase(owner <> "/" <> repo) ==
-             repository_from_workspace(Keyword.fetch!(opts, :workspace)) or
+           String.downcase(owner <> "/" <> repo) == Keyword.fetch!(opts, :repository) or
              {:error, :pr_repository_mismatch} do
       :ok
     else
       {:error, reason} -> {:error, reason}
       _ -> {:error, :invalid_github_pr_url}
-    end
-  end
-
-  defp repository_from_workspace(workspace) do
-    case System.cmd("git", ["-C", workspace, "config", "--get", "remote.origin.url"], stderr_to_stdout: true) do
-      {remote, 0} ->
-        remote
-        |> String.trim()
-        |> String.replace(~r{^(?:https://github\.com/|git@github\.com:)}, "")
-        |> String.trim_trailing(".git")
-        |> String.downcase()
-
-      {_output, _status} ->
-        nil
     end
   end
 
@@ -316,7 +311,8 @@ defmodule SymphonyElixir.Linear.AgentTool do
   defp format_error(:missing_query), do: "`linear_graphql` requires a non-empty `query` string."
   defp format_error(:invalid_variables), do: "`linear_graphql.variables` must be a JSON object when provided."
   defp format_error(:invalid_arguments), do: "`linear_graphql` expects a query string or an object with `query` and optional `variables`."
-  defp format_error(reason), do: "Tool execution rejected: #{inspect(reason)}"
+  defp format_error(reason) when is_atom(reason), do: "Tool execution rejected: #{reason}"
+  defp format_error(_reason), do: "Tool execution rejected by the runtime; inspect runtime logs for details."
 
   defp issue_query,
     do:

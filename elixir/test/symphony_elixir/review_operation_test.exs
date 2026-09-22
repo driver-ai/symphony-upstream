@@ -20,6 +20,8 @@ defmodule SymphonyElixir.ReviewOperationTest do
       #!/usr/bin/env python3
       import json, sys, time
       request = json.load(open(sys.argv[2]))
+      with open(request["state_root"] + "/invocations", "a") as calls:
+          calls.write(request["operation"] + "\n")
       common = {"protocol_version": 1, "request_id": request["request_id"], "issue_id": request["issue"]["id"], "run_id": "run-1"}
       print(json.dumps({**common, "event": "accepted"}), flush=True)
       time.sleep(0.1)
@@ -32,6 +34,7 @@ defmodule SymphonyElixir.ReviewOperationTest do
       context = %{
         issue: %{"id" => "issue-1", "identifier" => "SYM-1", "description" => "plan"},
         workspace: workspace,
+        repository: "driver-ai/runtime",
         thread_id: "thread-1",
         session_id: "session-1"
       }
@@ -39,7 +42,7 @@ defmodule SymphonyElixir.ReviewOperationTest do
       review = %{executable: executable, state_root: state_root}
       assert {:ok, %{"event" => "accepted", "run_id" => "run-1"}} = ReviewOperation.execute("start", nil, context, review, server: server)
       assert {:ok, %{"event" => "accepted", "run_id" => "run-1"}} = ReviewOperation.execute("start", nil, context, review, server: server)
-      assert length(Path.wildcard(Path.join([state_root, "requests", "*.json"]))) == 1
+      assert File.read!(Path.join(state_root, "invocations")) == "start\n"
     after
       File.rm_rf(root)
     end

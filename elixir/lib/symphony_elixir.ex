@@ -38,6 +38,8 @@ defmodule SymphonyElixir.Application do
     children = [
       {Phoenix.PubSub, name: SymphonyElixir.PubSub},
       SymphonyElixir.WorkflowStore,
+      {Task.Supervisor, name: SymphonyElixir.ReviewTaskSupervisor},
+      SymphonyElixir.ReviewOperation,
       SymphonyElixir.AgentRuntimeSupervisor,
       SymphonyElixir.HttpServer,
       SymphonyElixir.StatusDashboard

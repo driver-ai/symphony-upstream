@@ -7,6 +7,7 @@ defmodule SymphonyElixir.ReviewOperation do
   """
 
   use GenServer
+  require Logger
 
   @protocol_version 1
   @control_operations ~w(status cancel verify)
@@ -17,6 +18,7 @@ defmodule SymphonyElixir.ReviewOperation do
   @type context :: %{
           required(:issue) => map(),
           required(:workspace) => Path.t(),
+          required(:repository) => String.t(),
           required(:thread_id) => String.t(),
           required(:session_id) => String.t()
         }
@@ -42,42 +44,60 @@ defmodule SymphonyElixir.ReviewOperation do
       when operation in @launch_operations do
     issue_id = get_in(context, [:issue, "id"])
 
-    case Map.get(state, issue_id) do
+    case Map.get(state, issue_id) || persisted_run(review.state_root, issue_id) do
       %{run_id: known_run_id} = active when is_binary(known_run_id) ->
         {:reply, {:ok, accepted_result(active.request_id, issue_id, known_run_id)}, state}
+
+      %{froms: froms} = active ->
+        {:noreply, Map.put(state, issue_id, %{active | froms: [from | froms]})}
 
       _ ->
         launch_review(operation, run_id, context, review, from, issue_id, state)
     end
   end
 
-  def handle_call({:execute, operation, run_id, context, review}, _from, state) do
+  def handle_call({:execute, operation, run_id, context, review}, from, state) do
     issue_id = get_in(context, [:issue, "id"])
-    effective_run_id = run_id || get_in(state, [issue_id, :run_id])
+    known_run_id = get_in(state, [issue_id, :run_id])
+    owner = self()
 
-    result =
-      with {:ok, request} <- build_request(operation, effective_run_id, context, review),
-           {:ok, request_path} <- write_request(request, review.state_root) do
-        run_control(review.executable, request_path, request)
-      end
+    case Task.Supervisor.start_child(SymphonyElixir.ReviewTaskSupervisor, fn ->
+           result =
+             with :ok <- validate_known_run_id(run_id, known_run_id),
+                  {:ok, request} <- build_request(operation, run_id || known_run_id, context, review),
+                  {:ok, request_path} <- write_request(request, review.state_root) do
+               run_control(review.executable, request_path, request)
+             end
 
-    next_state = maybe_reap_canceled_run(operation, issue_id, result, state)
-    {:reply, result, next_state}
+           send(owner, {:review_control_result, from, operation, issue_id, result})
+         end) do
+      {:ok, _pid} -> {:noreply, state}
+      {:error, reason} -> {:reply, {:error, {:review_control_unavailable, reason}}, state}
+    end
   end
 
   defp launch_review(operation, run_id, context, review, from, issue_id, state) do
     owner = self()
+    Logger.info("Launching review operation issue_id=#{issue_id} session_id=#{context.session_id} operation=#{operation}")
 
     with {:ok, request} <- build_request(operation, run_id, context, review),
          {:ok, request_path} <- write_request(request, review.state_root),
-         {:ok, pid} <- Task.start(fn -> launch_runner(owner, review.executable, request_path, request) end) do
+         {:ok, pid} <-
+           Task.Supervisor.start_child(SymphonyElixir.ReviewTaskSupervisor, fn ->
+             try do
+               launch_runner(owner, review.executable, request_path, request)
+             after
+               File.rm(request_path)
+             end
+           end) do
       active = %{
         pid: pid,
         monitor: Process.monitor(pid),
-        from: from,
+        froms: [from],
         request_id: request["request_id"],
         issue_id: issue_id,
-        run_id: run_id
+        run_id: run_id,
+        state_root: review.state_root
       }
 
       {:noreply, Map.put(state, issue_id, active)}
@@ -89,9 +109,18 @@ defmodule SymphonyElixir.ReviewOperation do
   @impl true
   def handle_info({:review_event, issue_id, %{"event" => "accepted"} = event}, state) do
     case Map.get(state, issue_id) do
-      %{from: from} = active ->
-        GenServer.reply(from, {:ok, event})
-        {:noreply, Map.put(state, issue_id, %{active | from: nil, run_id: event["run_id"]})}
+      %{froms: [_ | _] = froms} = active ->
+        case persist_run(active.state_root, issue_id, event) do
+          :ok ->
+            Logger.info("Review runner accepted issue_id=#{issue_id} run_id=#{event["run_id"]}")
+            Enum.each(froms, &GenServer.reply(&1, {:ok, event}))
+            {:noreply, Map.put(state, issue_id, %{active | froms: [], run_id: event["run_id"]})}
+
+          {:error, reason} ->
+            Enum.each(froms, &GenServer.reply(&1, {:error, {:review_run_persistence_failed, reason}}))
+            Process.exit(active.pid, :kill)
+            {:noreply, Map.delete(state, issue_id)}
+        end
 
       _ ->
         {:noreply, state}
@@ -100,10 +129,15 @@ defmodule SymphonyElixir.ReviewOperation do
 
   def handle_info({:review_event, _issue_id, _event}, state), do: {:noreply, state}
 
+  def handle_info({:review_control_result, from, operation, issue_id, result}, state) do
+    GenServer.reply(from, result)
+    {:noreply, maybe_reap_canceled_run(operation, issue_id, result, state)}
+  end
+
   def handle_info({:DOWN, monitor, :process, _pid, reason}, state) do
     case Enum.find(state, fn {_issue_id, active} -> active[:monitor] == monitor end) do
-      {issue_id, %{from: from}} when not is_nil(from) ->
-        GenServer.reply(from, {:error, {:review_runner_ended_before_acceptance, reason}})
+      {issue_id, %{froms: [_ | _] = froms}} ->
+        Enum.each(froms, &GenServer.reply(&1, {:error, {:review_runner_ended_before_acceptance, reason}}))
         {:noreply, Map.delete(state, issue_id)}
 
       {issue_id, _active} ->
@@ -114,9 +148,10 @@ defmodule SymphonyElixir.ReviewOperation do
     end
   end
 
+  def handle_info(_message, state), do: {:noreply, state}
+
   defp build_request(operation, run_id, context, review) do
-    with :ok <- validate_operation_run_id(operation, run_id),
-         {:ok, repository} <- repository_identity(context.workspace) do
+    with :ok <- validate_operation_run_id(operation, run_id) do
       {:ok,
        %{
          "protocol_version" => @protocol_version,
@@ -126,7 +161,7 @@ defmodule SymphonyElixir.ReviewOperation do
          "issue" => context.issue,
          "execution" => %{
            "workspace" => Path.expand(context.workspace),
-           "repository" => repository,
+           "repository" => context.repository,
            "thread_id" => context.thread_id,
            "session_id" => context.session_id
          },
@@ -136,19 +171,14 @@ defmodule SymphonyElixir.ReviewOperation do
   end
 
   defp validate_operation_run_id("start", nil), do: :ok
-  defp validate_operation_run_id(operation, nil) when operation in ~w(status cancel verify), do: :ok
+  defp validate_operation_run_id(operation, nil) when operation in ~w(status resume cancel verify), do: :ok
   defp validate_operation_run_id(operation, run_id) when operation in ~w(status resume cancel verify) and is_binary(run_id), do: :ok
   defp validate_operation_run_id(_operation, _run_id), do: {:error, :invalid_review_run_id}
 
-  defp repository_identity(workspace) do
-    case System.cmd("git", ["-C", workspace, "config", "--get", "remote.origin.url"], stderr_to_stdout: true) do
-      {remote, 0} -> {:ok, normalize_repository(String.trim(remote))}
-      {_output, status} -> {:error, {:review_repository_unavailable, status}}
-    end
-  end
-
-  defp normalize_repository("git@github.com:" <> path), do: normalize_repository("https://github.com/" <> path)
-  defp normalize_repository(remote), do: remote |> String.trim_trailing("/") |> String.trim_trailing(".git")
+  defp validate_known_run_id(nil, _known_run_id), do: :ok
+  defp validate_known_run_id(run_id, nil) when is_binary(run_id), do: :ok
+  defp validate_known_run_id(run_id, run_id), do: :ok
+  defp validate_known_run_id(_run_id, _known_run_id), do: {:error, :review_run_id_mismatch}
 
   defp write_request(request, state_root) do
     requests_root = Path.join(state_root, "requests")
@@ -160,6 +190,33 @@ defmodule SymphonyElixir.ReviewOperation do
     end
   end
 
+  defp persisted_run(state_root, issue_id) do
+    with {:ok, payload} <- File.read(run_binding_path(state_root, issue_id)),
+         {:ok, %{"request_id" => request_id, "run_id" => run_id}} <- Jason.decode(payload),
+         true <- is_binary(request_id) and is_binary(run_id) do
+      %{request_id: request_id, run_id: run_id}
+    else
+      _ -> nil
+    end
+  end
+
+  defp persist_run(state_root, issue_id, event) do
+    path = run_binding_path(state_root, issue_id)
+
+    with :ok <- File.mkdir_p(Path.dirname(path)),
+         :ok <- File.write(path, Jason.encode!(Map.take(event, ["request_id", "run_id"])), [:exclusive]) do
+      File.chmod(path, 0o600)
+    else
+      {:error, :eexist} -> :ok
+      error -> error
+    end
+  end
+
+  defp run_binding_path(state_root, issue_id) do
+    name = :crypto.hash(:sha256, issue_id) |> Base.encode16(case: :lower)
+    Path.join([state_root, "runtime-bindings", name <> ".json"])
+  end
+
   defp launch_runner(owner, executable, request_path, request) do
     port =
       Port.open(
@@ -168,7 +225,6 @@ defmodule SymphonyElixir.ReviewOperation do
           :binary,
           :exit_status,
           :use_stdio,
-          :stderr_to_stdout,
           args: [String.to_charlist("--request"), String.to_charlist(request_path)],
           line: 65_536
         ]
@@ -180,12 +236,17 @@ defmodule SymphonyElixir.ReviewOperation do
   defp consume_port(port, request, owner, buffer, size) do
     receive do
       {^port, {:data, {:eol, line}}} ->
-        event = decode_event!(line, request)
+        payload = buffer <> line
+        event = decode_event!(payload, request)
         send(owner, {:review_event, get_in(request, ["issue", "id"]), event})
-        consume_port(port, request, owner, buffer, size + byte_size(line))
+        consume_port(port, request, owner, "", size + byte_size(line))
 
       {^port, {:data, {:noeol, chunk}}} when size + byte_size(chunk) <= @max_output_bytes ->
         consume_port(port, request, owner, buffer <> chunk, size + byte_size(chunk))
+
+      {^port, {:data, {:noeol, _chunk}}} ->
+        Port.close(port)
+        raise ArgumentError, "runner output exceeded the protocol limit"
 
       {^port, {:exit_status, _status}} ->
         :ok
@@ -193,28 +254,36 @@ defmodule SymphonyElixir.ReviewOperation do
   end
 
   defp run_control(executable, request_path, request) do
-    case System.cmd(executable, ["--request", request_path], stderr_to_stdout: true) do
-      {output, 0} ->
-        output
-        |> String.split("\n", trim: true)
-        |> Enum.map(&decode_event!(&1, request))
-        |> Enum.reverse()
-        |> Enum.find(&(&1["event"] == "result"))
-        |> case do
-          nil -> {:error, :review_runner_missing_result}
-          result -> {:ok, result}
-        end
+    try do
+      case System.cmd(executable, ["--request", request_path]) do
+        {output, 0} ->
+          output
+          |> String.split("\n", trim: true)
+          |> Enum.map(&decode_event!(&1, request))
+          |> Enum.reverse()
+          |> Enum.find(&(&1["event"] == "result"))
+          |> case do
+            nil -> {:error, :review_runner_missing_result}
+            result -> {:ok, result}
+          end
 
-      {_output, status} ->
-        {:error, {:review_runner_exit, status}}
+        {_output, status} ->
+          {:error, {:review_runner_exit, status}}
+      end
+    rescue
+      error -> {:error, {:invalid_review_runner_output, Exception.message(error)}}
+    after
+      File.rm(request_path)
     end
-  rescue
-    error -> {:error, {:invalid_review_runner_output, Exception.message(error)}}
   end
 
   defp maybe_reap_canceled_run("cancel", issue_id, {:ok, %{"status" => "canceled"}}, state) do
     case Map.get(state, issue_id) do
-      %{pid: pid} when is_pid(pid) -> Process.exit(pid, :kill)
+      %{pid: pid, froms: froms, state_root: state_root} when is_pid(pid) ->
+        Enum.each(froms, &GenServer.reply(&1, {:error, :review_run_canceled}))
+        Process.exit(pid, :kill)
+        File.rm(run_binding_path(state_root, issue_id))
+
       _ -> :ok
     end
 

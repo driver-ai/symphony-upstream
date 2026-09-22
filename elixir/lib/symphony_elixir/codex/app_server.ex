@@ -47,10 +47,16 @@ defmodule SymphonyElixir.Codex.AppServer do
   @spec start_session(Path.t(), keyword()) :: {:ok, session()} | {:error, term()}
   def start_session(workspace, opts \\ []) do
     worker_host = Keyword.get(opts, :worker_host)
-    dynamic_tool_binding = DynamicTool.bind()
 
-    with {:ok, expanded_workspace} <- validate_workspace_cwd(workspace, worker_host),
-         {:ok, port} <- start_port(expanded_workspace, worker_host, dynamic_tool_binding) do
+    with {:ok, expanded_workspace} <- validate_workspace_cwd(workspace, worker_host) do
+      dynamic_tool_binding = DynamicTool.bind(expanded_workspace)
+
+      start_bound_session(expanded_workspace, worker_host, dynamic_tool_binding)
+    end
+  end
+
+  defp start_bound_session(expanded_workspace, worker_host, dynamic_tool_binding) do
+    with {:ok, port} <- start_port(expanded_workspace, worker_host, dynamic_tool_binding) do
       metadata = port_metadata(port, worker_host)
 
       with {:ok, session_policies} <- session_policies(expanded_workspace, worker_host),

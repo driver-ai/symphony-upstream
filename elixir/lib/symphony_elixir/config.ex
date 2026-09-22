@@ -137,6 +137,9 @@ defmodule SymphonyElixir.Config do
       settings.worker.ssh_hosts != [] ->
         {:error, :review_does_not_support_remote_workers}
 
+      settings.codex.thread_sandbox != "workspace-write" ->
+        {:error, :review_requires_workspace_write_sandbox}
+
       true ->
         validate_review_paths(review, settings)
     end

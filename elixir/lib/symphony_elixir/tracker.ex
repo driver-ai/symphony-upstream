@@ -45,8 +45,8 @@ defmodule SymphonyElixir.Tracker do
   app-server session so tool advertisement and execution cannot drift across a
   workflow reload.
   """
-  @spec bind_agent_tools() :: map()
-  def bind_agent_tools do
+  @spec bind_agent_tools(Path.t() | nil) :: map()
+  def bind_agent_tools(workspace \\ nil) do
     settings = Config.settings!()
     tracker_settings = settings.tracker
     adapter = adapter_for_settings!(tracker_settings)
@@ -55,6 +55,7 @@ defmodule SymphonyElixir.Tracker do
       adapter: adapter,
       tracker_settings: tracker_settings,
       review: settings.review,
+      repository: capture_repository(workspace),
       tool_specs: adapter_agent_tool_specs(adapter, settings.review),
       secret_environment_names: adapter_secret_environment_names(adapter, tracker_settings)
     }
@@ -74,6 +75,7 @@ defmodule SymphonyElixir.Tracker do
       opts
       |> Keyword.put(:tracker_settings, tracker_settings)
       |> Keyword.put(:review, binding[:review])
+      |> Keyword.put(:repository, binding[:repository])
     )
   end
 
@@ -118,6 +120,24 @@ defmodule SymphonyElixir.Tracker do
       true ->
         []
     end
+  end
+
+  defp capture_repository(nil), do: nil
+
+  defp capture_repository(workspace) do
+    case System.cmd("git", ["-C", workspace, "config", "--get", "remote.origin.url"], stderr_to_stdout: true) do
+      {remote, 0} -> normalize_repository(remote)
+      {_output, _status} -> nil
+    end
+  end
+
+  defp normalize_repository(remote) do
+    remote
+    |> String.trim()
+    |> String.replace(~r{^(?:https://github\.com/|git@github\.com:)}, "")
+    |> String.trim_trailing(".git")
+    |> String.trim_trailing("/")
+    |> String.downcase()
   end
 
   defp execute_agent_tool_with_adapter(adapter, tool, arguments, opts) do
