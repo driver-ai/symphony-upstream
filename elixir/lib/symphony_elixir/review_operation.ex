@@ -61,19 +61,23 @@ defmodule SymphonyElixir.ReviewOperation do
     known_run_id = get_in(state, [issue_id, :run_id])
     owner = self()
 
-    case Task.Supervisor.start_child(SymphonyElixir.ReviewTaskSupervisor, fn ->
-           result =
-             with :ok <- validate_known_run_id(run_id, known_run_id),
-                  {:ok, request} <- build_request(operation, run_id || known_run_id, context, review),
-                  {:ok, request_path} <- write_request(request, review.state_root) do
-               run_control(review.executable, request_path, request)
-             end
+    task = fn -> run_control_task(owner, from, operation, run_id, known_run_id, context, review, issue_id) end
 
-           send(owner, {:review_control_result, from, operation, issue_id, result})
-         end) do
+    case Task.Supervisor.start_child(SymphonyElixir.ReviewTaskSupervisor, task) do
       {:ok, _pid} -> {:noreply, state}
       {:error, reason} -> {:reply, {:error, {:review_control_unavailable, reason}}, state}
     end
+  end
+
+  defp run_control_task(owner, from, operation, run_id, known_run_id, context, review, issue_id) do
+    result =
+      with :ok <- validate_known_run_id(run_id, known_run_id),
+           {:ok, request} <- build_request(operation, run_id || known_run_id, context, review),
+           {:ok, request_path} <- write_request(request, review.state_root) do
+        run_control(review.executable, request_path, request)
+      end
+
+    send(owner, {:review_control_result, from, operation, issue_id, result})
   end
 
   defp launch_review(operation, run_id, context, review, from, issue_id, state) do
@@ -254,23 +258,22 @@ defmodule SymphonyElixir.ReviewOperation do
   end
 
   defp run_control(executable, request_path, request) do
-    try do
-      case System.cmd(executable, ["--request", request_path]) do
-        {output, 0} ->
-          output
-          |> String.split("\n", trim: true)
-          |> Enum.map(&decode_event!(&1, request))
-          |> Enum.reverse()
-          |> Enum.find(&(&1["event"] == "result"))
-          |> case do
-            nil -> {:error, :review_runner_missing_result}
-            result -> {:ok, result}
-          end
+    case System.cmd(executable, ["--request", request_path]) do
+      {output, 0} ->
+        output
+        |> String.split("\n", trim: true)
+        |> Enum.map(&decode_event!(&1, request))
+        |> Enum.reverse()
+        |> Enum.find(&(&1["event"] == "result"))
+        |> case do
+          nil -> {:error, :review_runner_missing_result}
+          result -> {:ok, result}
+        end
 
-        {_output, status} ->
-          {:error, {:review_runner_exit, status}}
-      end
-    rescue
+      {_output, status} ->
+        {:error, {:review_runner_exit, status}}
+    end
+  rescue
       error -> {:error, {:invalid_review_runner_output, Exception.message(error)}}
     after
       File.rm(request_path)
