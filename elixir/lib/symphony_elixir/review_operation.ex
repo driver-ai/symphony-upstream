@@ -274,10 +274,9 @@ defmodule SymphonyElixir.ReviewOperation do
         {:error, {:review_runner_exit, status}}
     end
   rescue
-      error -> {:error, {:invalid_review_runner_output, Exception.message(error)}}
-    after
-      File.rm(request_path)
-    end
+    error -> {:error, {:invalid_review_runner_output, Exception.message(error)}}
+  after
+    File.rm(request_path)
   end
 
   defp maybe_reap_canceled_run("cancel", issue_id, {:ok, %{"status" => "canceled"}}, state) do
