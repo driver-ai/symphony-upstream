@@ -68,10 +68,12 @@ defmodule SymphonyElixir.Linear.AgentTool do
   end
 
   defp dispatch_typed("linear_read", args, opts) do
+    id = args["id"]
+
     case args["operation"] do
       "issue" -> graphql(issue_query(), %{id: bound_issue_id(opts)}, opts)
       "comments" -> graphql(comments_query(), %{id: bound_issue_id(opts), after: args["cursor"]}, opts)
-      "document" when is_binary(args["id"]) -> graphql(document_query(), %{id: args["id"]}, opts)
+      "document" when is_binary(id) -> graphql(document_query(), %{id: id}, opts)
       "workflow_states" -> graphql(states_query(), %{id: bound_issue_id(opts)}, opts)
       _ -> {:error, :invalid_linear_read_operation}
     end
