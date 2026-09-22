@@ -13,8 +13,10 @@ defmodule SymphonyElixir.Linear.AgentTool do
     if review_enabled?(opts), do: execute_review_tool(tool, arguments, opts), else: execute_legacy_tool(tool, arguments, opts)
   end
 
+  @spec tool_specs() :: [map()]
+  def tool_specs, do: tool_specs(nil)
+
   @spec tool_specs(map() | nil) :: [map()]
-  def tool_specs(review \\ nil)
   def tool_specs(%{enabled: true}), do: typed_tool_specs()
 
   def tool_specs(_) do
