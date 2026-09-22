@@ -284,7 +284,8 @@ defmodule SymphonyElixir.ReviewOperation do
         Process.exit(pid, :kill)
         File.rm(run_binding_path(state_root, issue_id))
 
-      _ -> :ok
+      _ ->
+        :ok
     end
 
     Map.delete(state, issue_id)

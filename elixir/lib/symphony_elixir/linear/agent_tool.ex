@@ -197,6 +197,7 @@ defmodule SymphonyElixir.Linear.AgentTool do
       thread_id: Keyword.fetch!(opts, :thread_id),
       session_id: Keyword.fetch!(opts, :session_id)
     }
+
   defp review_module(opts), do: Keyword.get(opts, :review_module, ReviewOperation)
 
   defp bound_issue_id(opts) do
