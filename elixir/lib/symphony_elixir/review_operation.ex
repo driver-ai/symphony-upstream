@@ -51,6 +51,20 @@ defmodule SymphonyElixir.ReviewOperation do
     end
   end
 
+  def handle_call({:execute, operation, run_id, context, review}, _from, state) do
+    issue_id = get_in(context, [:issue, "id"])
+    effective_run_id = run_id || get_in(state, [issue_id, :run_id])
+
+    result =
+      with {:ok, request} <- build_request(operation, effective_run_id, context, review),
+           {:ok, request_path} <- write_request(request, review.state_root) do
+        run_control(review.executable, request_path, request)
+      end
+
+    next_state = maybe_reap_canceled_run(operation, issue_id, result, state)
+    {:reply, result, next_state}
+  end
+
   defp launch_review(operation, run_id, context, review, from, issue_id, state) do
     owner = self()
 
@@ -70,20 +84,6 @@ defmodule SymphonyElixir.ReviewOperation do
     else
       {:error, reason} -> {:reply, {:error, reason}, state}
     end
-  end
-
-  def handle_call({:execute, operation, run_id, context, review}, _from, state) do
-    issue_id = get_in(context, [:issue, "id"])
-    effective_run_id = run_id || get_in(state, [issue_id, :run_id])
-
-    result =
-      with {:ok, request} <- build_request(operation, effective_run_id, context, review),
-           {:ok, request_path} <- write_request(request, review.state_root) do
-        run_control(review.executable, request_path, request)
-      end
-
-    next_state = maybe_reap_canceled_run(operation, issue_id, result, state)
-    {:reply, result, next_state}
   end
 
   @impl true
