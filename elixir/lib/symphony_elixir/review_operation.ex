@@ -11,6 +11,7 @@ defmodule SymphonyElixir.ReviewOperation do
   @protocol_version 1
   @control_operations ~w(status cancel verify)
   @launch_operations ~w(start resume)
+  @operations @launch_operations ++ @control_operations
   @max_output_bytes 65_536
 
   @type context :: %{
@@ -28,7 +29,7 @@ defmodule SymphonyElixir.ReviewOperation do
   @spec execute(String.t(), String.t() | nil, context(), map(), keyword()) ::
           {:ok, map()} | {:error, term()}
   def execute(operation, run_id, context, review, opts \\ [])
-      when operation in @launch_operations ++ @control_operations do
+      when operation in @operations do
     server = Keyword.get(opts, :server, __MODULE__)
     GenServer.call(server, {:execute, operation, run_id, context, review}, :infinity)
   end
