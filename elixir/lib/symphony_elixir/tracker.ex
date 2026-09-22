@@ -47,20 +47,22 @@ defmodule SymphonyElixir.Tracker do
   """
   @spec bind_agent_tools() :: map()
   def bind_agent_tools do
-    tracker_settings = Config.settings!().tracker
+    settings = Config.settings!()
+    tracker_settings = settings.tracker
     adapter = adapter_for_settings!(tracker_settings)
 
     %{
       adapter: adapter,
       tracker_settings: tracker_settings,
-      tool_specs: adapter_agent_tool_specs(adapter),
+      review: settings.review,
+      tool_specs: adapter_agent_tool_specs(adapter, settings.review),
       secret_environment_names: adapter_secret_environment_names(adapter, tracker_settings)
     }
   end
 
   @spec execute_bound_agent_tool(map(), String.t(), term(), keyword()) :: map()
   def execute_bound_agent_tool(
-        %{adapter: adapter, tracker_settings: tracker_settings},
+        %{adapter: adapter, tracker_settings: tracker_settings} = binding,
         tool,
         arguments,
         opts \\ []
@@ -69,7 +71,9 @@ defmodule SymphonyElixir.Tracker do
       adapter,
       tool,
       arguments,
-      Keyword.put(opts, :tracker_settings, tracker_settings)
+      opts
+      |> Keyword.put(:tracker_settings, tracker_settings)
+      |> Keyword.put(:review, binding[:review])
     )
   end
 
@@ -103,11 +107,16 @@ defmodule SymphonyElixir.Tracker do
     adapter
   end
 
-  defp adapter_agent_tool_specs(adapter) do
-    if Code.ensure_loaded?(adapter) and function_exported?(adapter, :agent_tool_specs, 0) do
-      adapter.agent_tool_specs()
-    else
-      []
+  defp adapter_agent_tool_specs(adapter, review) do
+    cond do
+      Code.ensure_loaded?(adapter) and function_exported?(adapter, :agent_tool_specs, 1) ->
+        adapter.agent_tool_specs(review)
+
+      Code.ensure_loaded?(adapter) and function_exported?(adapter, :agent_tool_specs, 0) ->
+        adapter.agent_tool_specs()
+
+      true ->
+        []
     end
   end
 

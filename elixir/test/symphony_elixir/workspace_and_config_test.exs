@@ -1346,6 +1346,37 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
            }
   end
 
+  test "review configuration is opt-in and requires absolute installed paths when enabled" do
+    assert {:ok, disabled} = Schema.parse(%{review: %{enabled: false}})
+    refute disabled.review.enabled
+
+    assert {:error, {:invalid_workflow_config, missing_message}} =
+             Schema.parse(%{review: %{enabled: true}})
+
+    assert missing_message =~ "review.executable can't be blank"
+    assert missing_message =~ "review.state_root can't be blank"
+
+    assert {:error, {:invalid_workflow_config, relative_message}} =
+             Schema.parse(%{
+               review: %{enabled: true, executable: "bin/review", state_root: "review-runs"}
+             })
+
+    assert relative_message =~ "must be an absolute path"
+
+    assert {:ok, enabled} =
+             Schema.parse(%{
+               review: %{
+                 enabled: true,
+                 executable: "/opt/symphony/review-runner",
+                 state_root: "/var/lib/symphony/review-runs"
+               }
+             })
+
+    assert enabled.review.enabled
+    assert enabled.review.executable == "/opt/symphony/review-runner"
+    assert enabled.review.state_root == "/var/lib/symphony/review-runs"
+  end
+
   test "linear provider project_slug accepts a list and rejects an empty scope" do
     assert {:ok, settings} =
              Schema.parse(%{

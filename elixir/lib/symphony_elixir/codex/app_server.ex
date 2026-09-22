@@ -95,14 +95,20 @@ defmodule SymphonyElixir.Codex.AppServer do
       ) do
     on_message = Keyword.get(opts, :on_message, &default_on_message/1)
 
-    tool_executor =
-      Keyword.get(opts, :tool_executor, fn tool, arguments ->
-        DynamicTool.execute(tool, arguments, dynamic_tool_binding, issue: issue)
-      end)
-
     case start_turn(port, thread_id, prompt, issue, workspace, approval_policy, turn_sandbox_policy) do
       {:ok, turn_id} ->
         session_id = "#{thread_id}-#{turn_id}"
+
+        tool_executor =
+          Keyword.get(opts, :tool_executor, fn tool, arguments ->
+            DynamicTool.execute(tool, arguments, dynamic_tool_binding,
+              issue: issue,
+              workspace: workspace,
+              thread_id: thread_id,
+              session_id: session_id
+            )
+          end)
+
         Logger.info("Codex session started for #{issue_context(issue)} session_id=#{session_id}")
 
         emit_message(

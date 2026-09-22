@@ -3,7 +3,7 @@ defmodule SymphonyElixir.Config do
   Runtime configuration loaded from `WORKFLOW.md`.
   """
 
-  alias SymphonyElixir.{Config.Schema, Tracker}
+  alias SymphonyElixir.{Config.Schema, PathSafety, Tracker}
   alias SymphonyElixir.{Workflow, WorkflowStore}
 
   @default_prompt_template """
@@ -116,12 +116,91 @@ defmodule SymphonyElixir.Config do
   @doc false
   @spec validate_settings(Schema.t()) :: :ok | {:error, term()}
   def validate_settings(settings) do
-    if is_nil(settings.tracker.kind) do
-      {:error, :missing_tracker_kind}
-    else
-      Tracker.validate_config(settings.tracker)
+    with :ok <- validate_tracker(settings),
+         :ok <- validate_review(settings) do
+      :ok
     end
   end
+
+  defp validate_tracker(settings) do
+    if is_nil(settings.tracker.kind), do: {:error, :missing_tracker_kind}, else: Tracker.validate_config(settings.tracker)
+  end
+
+  defp validate_review(%{review: %{enabled: false}}), do: :ok
+
+  defp validate_review(settings) do
+    review = settings.review
+
+    cond do
+      settings.tracker.kind != "linear" ->
+        {:error, :review_requires_linear_tracker}
+
+      settings.worker.ssh_hosts != [] ->
+        {:error, :review_does_not_support_remote_workers}
+
+      not File.regular?(review.executable) ->
+        {:error, {:invalid_review_executable, review.executable}}
+
+      not executable?(review.executable) ->
+        {:error, {:review_executable_not_executable, review.executable}}
+
+      writable_path_overlap?(review.executable, settings) ->
+        {:error, {:review_executable_worker_writable, review.executable}}
+
+      not File.dir?(review.state_root) ->
+        {:error, {:invalid_review_state_root, review.state_root}}
+
+      not private_directory?(review.state_root) ->
+        {:error, {:review_state_root_not_private, review.state_root}}
+
+      writable_path_overlap?(review.state_root, settings) ->
+        {:error, {:review_state_root_worker_writable, review.state_root}}
+
+      true ->
+        :ok
+    end
+  end
+
+  defp executable?(path) do
+    case File.stat(path) do
+      {:ok, %{mode: mode}} -> Bitwise.band(mode, 0o111) != 0
+      _ -> false
+    end
+  end
+
+  defp private_directory?(path) do
+    case File.stat(path) do
+      {:ok, %{type: :directory, mode: mode}} -> Bitwise.band(mode, 0o077) == 0
+      _ -> false
+    end
+  end
+
+  defp writable_path_overlap?(state_root, settings) do
+    extra_roots =
+      (settings.codex.turn_sandbox_policy || %{})
+      |> get_in(["writableRoots"])
+      |> List.wrap()
+
+    workflow_dir = Workflow.workflow_file_path() |> Path.expand() |> Path.dirname()
+    workspace_root = Path.expand(settings.workspace.root, workflow_dir)
+    roots = [workspace_root, System.tmp_dir!(), "/tmp"] ++ extra_roots
+
+    canonical_state = canonical_path(state_root)
+
+    Enum.any?(roots, fn root ->
+      canonical_root = canonical_path(root)
+      path_contains?(canonical_root, canonical_state) or path_contains?(canonical_state, canonical_root)
+    end)
+  end
+
+  defp canonical_path(path) when is_binary(path) do
+    case PathSafety.canonicalize(Path.expand(path)) do
+      {:ok, canonical} -> canonical
+      _ -> Path.expand(path)
+    end
+  end
+
+  defp path_contains?(parent, child), do: child == parent or String.starts_with?(child, parent <> "/")
 
   defp format_config_error(reason) do
     case reason do

@@ -27,6 +27,10 @@ Linear serves `linear_graphql`, GitHub Issues serves `github_api`, Jira Cloud se
 tools with configured host-side auth and removes declared tracker-token environment variables from
 the Codex child, so the agent does not need a second tracker login.
 
+An opt-in local Linear review gate replaces raw GraphQL with bounded review/read/comment/PR
+attachment/transition tools and verifies installed-runner evidence before handoff. See
+[`docs/review-runner.md`](docs/review-runner.md) for the protocol and trust boundary.
+
 If a claimed issue moves to a terminal state (`Done`, `Closed`, `Cancelled`, or `Duplicate`),
 Symphony stops the active agent for that issue and cleans up matching workspaces.
 
@@ -133,6 +137,11 @@ agent:
   max_turns: 20
 codex:
   command: codex app-server
+# Optional; local Linear workers only. Paths must be installed and outside worker-writable roots.
+review:
+  enabled: false
+  executable: /opt/driver-symphony/review-run.py
+  state_root: /var/lib/driver-symphony/review-runs
 ---
 
 You are working on an issue from the configured tracker {{ issue.identifier }}.

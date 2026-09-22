@@ -1354,6 +1354,11 @@ Orchestrator behavior on tracker errors:
 
 ### 11.5 Tracker Writes and Agent Tools (Important Boundary)
 
+An implementation MAY replace a tracker's generic mutation tool with finite typed operations for a
+session-bound policy. When enabled, it MUST reject the generic tool at advertisement and execution,
+bind writes to the active issue/session, and fail closed if required external execution evidence is
+missing, stale, malformed, or unavailable. Disabled deployments retain their existing boundary.
+
 Symphony does not require first-class tracker write APIs in the orchestrator.
 
 - Ticket mutations (state transitions, comments, attachments, PR metadata) are typically handled by
