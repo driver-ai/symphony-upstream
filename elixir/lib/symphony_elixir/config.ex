@@ -137,13 +137,22 @@ defmodule SymphonyElixir.Config do
       settings.worker.ssh_hosts != [] ->
         {:error, :review_does_not_support_remote_workers}
 
-      settings.codex.thread_sandbox != "workspace-write" ->
+      settings.codex.thread_sandbox != "workspace-write" or not bounded_turn_policy?(settings.codex.turn_sandbox_policy) ->
         {:error, :review_requires_workspace_write_sandbox}
 
       true ->
         validate_review_paths(review, settings)
     end
   end
+
+  defp bounded_turn_policy?(nil), do: true
+
+  defp bounded_turn_policy?(%{"type" => "workspaceWrite"} = policy) do
+    roots = Map.get(policy, "writableRoots", [])
+    is_list(roots) and Enum.all?(roots, &(is_binary(&1) and Path.type(&1) == :absolute))
+  end
+
+  defp bounded_turn_policy?(_policy), do: false
 
   defp validate_review_paths(review, settings) do
     with :ok <- validate_review_executable(review.executable, settings) do
@@ -197,17 +206,27 @@ defmodule SymphonyElixir.Config do
 
     Enum.any?(roots, fn root ->
       canonical_root = canonical_path(root)
-      path_contains?(canonical_root, canonical_state) or path_contains?(canonical_state, canonical_root)
+
+      pairs = for writable <- [Path.expand(root), canonical_root], trusted <- [Path.expand(state_root), canonical_state], do: {writable, trusted}
+      Enum.any?(pairs, fn {writable, trusted} -> path_contains?(writable, trusted) or path_contains?(trusted, writable) end)
     end)
   end
 
   defp canonical_path(path) when is_binary(path) do
-    case PathSafety.canonicalize(Path.expand(path)) do
-      {:ok, canonical} -> canonical
-      _ -> Path.expand(path)
+    # stat detects symlink cycles before the segment resolver follows them.
+    case File.stat(path) do
+      {:error, reason} when reason != :enoent ->
+        "/"
+
+      _ ->
+        case PathSafety.canonicalize(Path.expand(path)) do
+          {:ok, canonical} -> canonical
+          _ -> "/"
+        end
     end
   end
 
+  defp path_contains?("/", _child), do: true
   defp path_contains?(parent, child), do: child == parent or String.starts_with?(child, parent <> "/")
 
   defp format_config_error(reason) do

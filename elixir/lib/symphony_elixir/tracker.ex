@@ -22,11 +22,13 @@ defmodule SymphonyElixir.Tracker do
   @callback fetch_issues_by_states([String.t()]) :: {:ok, [Issue.t()]} | {:error, term()}
   @callback fetch_issues_by_ids([String.t()]) :: {:ok, [Issue.t()]} | {:error, term()}
   @callback agent_tool_specs() :: [map()]
+  @callback agent_tool_specs(map()) :: [map()]
   @callback execute_agent_tool(String.t(), term(), keyword()) :: map()
   @callback secret_environment_names(map()) :: [String.t()]
   @callback validate_config(map()) :: :ok | {:error, term()}
 
   @optional_callbacks agent_tool_specs: 0,
+                      agent_tool_specs: 1,
                       execute_agent_tool: 3,
                       validate_config: 1
 
@@ -125,19 +127,23 @@ defmodule SymphonyElixir.Tracker do
   defp capture_repository(nil), do: nil
 
   defp capture_repository(workspace) do
-    case System.cmd("git", ["-C", workspace, "config", "--get", "remote.origin.url"], stderr_to_stdout: true) do
-      {remote, 0} -> normalize_repository(remote)
-      {_output, _status} -> nil
-    end
+    # Deployment hooks clone into repo/; standalone integrations may use the
+    # workspace itself. Never inherit a remote from a parent checkout.
+    Enum.find_value([Path.join(workspace, "repo"), workspace], fn path ->
+      with true <- File.exists?(Path.join(path, ".git")),
+           {remote, 0} <- System.cmd("git", ["-C", path, "config", "--get", "remote.origin.url"], stderr_to_stdout: true) do
+        normalize_repository(remote)
+      else
+        _ -> nil
+      end
+    end)
   end
 
   defp normalize_repository(remote) do
-    remote
-    |> String.trim()
-    |> String.replace(~r{^(?:https://github\.com/|git@github\.com:)}, "")
-    |> String.trim_trailing("/")
-    |> String.trim_trailing(".git")
-    |> String.downcase()
+    case Regex.run(~r{^(?:https://github\.com/|git@github\.com:|ssh://git@github\.com/)([^/\s]+/[^/\s]+?)(?:\.git)?/?$}, String.trim(remote)) do
+      [_, repository] -> String.downcase(repository)
+      _ -> nil
+    end
   end
 
   defp execute_agent_tool_with_adapter(adapter, tool, arguments, opts) do

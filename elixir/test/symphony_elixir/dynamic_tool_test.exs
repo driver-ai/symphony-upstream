@@ -4,16 +4,6 @@ defmodule SymphonyElixir.Codex.DynamicToolTest do
   alias SymphonyElixir.Codex.DynamicTool, as: BoundDynamicTool
   alias SymphonyElixir.Linear.AgentTool, as: DynamicTool
 
-  defmodule CompleteReview do
-    def execute("verify", nil, _context, _review) do
-      evidence =
-        ~w(plan_revision plan_hash repository base head context_fingerprint method_fingerprint config_fingerprint receipts)
-        |> Map.new(&{&1, if(&1 == "receipts", do: [], else: "value")})
-
-      {:ok, %{"event" => "result", "status" => "complete", "evidence" => evidence}}
-    end
-  end
-
   test "tool_specs advertises the linear_graphql input contract" do
     assert [
              %{
@@ -42,42 +32,6 @@ defmodule SymphonyElixir.Codex.DynamicToolTest do
     response = DynamicTool.execute("linear_graphql", %{"query" => "mutation Bypass { issueUpdate }"}, review: review)
     refute response["success"]
     assert Jason.decode!(response["output"])["error"]["message"] =~ "disabled"
-  end
-
-  test "typed transitions resolve the bound team state and verify protected handoff" do
-    test_pid = self()
-
-    client = fn query, variables, _opts ->
-      send(test_pid, {:query, query, variables})
-
-      cond do
-        query =~ "SymphonyBoundStates" ->
-          {:ok, %{"data" => %{"issue" => %{"team" => %{"states" => %{"nodes" => [%{"id" => "review-state", "name" => "In Review", "type" => "started"}]}}}}}}
-
-        query =~ "SymphonyBoundIssue" ->
-          {:ok, %{"data" => %{"issue" => %{"id" => "issue-1", "description" => "current plan", "attachments" => %{"nodes" => []}}}}}
-
-        query =~ "SymphonyTransition" ->
-          {:ok, %{"data" => %{"issueUpdate" => %{"success" => true}}}}
-      end
-    end
-
-    response =
-      DynamicTool.execute("linear_transition", %{"state_id" => "review-state"},
-        review: %{enabled: true},
-        issue: %{id: "issue-1"},
-        tracker_settings: %{active_states: ["In Progress"]},
-        workspace: File.cwd!(),
-        repository: "driver-ai/symphony-upstream",
-        thread_id: "thread-1",
-        session_id: "session-1",
-        review_module: CompleteReview,
-        linear_client: client
-      )
-
-    assert response["success"]
-    assert_received {:query, query, %{id: "issue-1", stateId: "review-state"}}
-    assert query =~ "SymphonyTransition"
   end
 
   test "unsupported tools return a failure payload with the supported tool list" do

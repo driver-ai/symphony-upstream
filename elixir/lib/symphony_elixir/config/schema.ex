@@ -187,11 +187,9 @@ defmodule SymphonyElixir.Config.Schema do
 
     defp validate_enabled_paths(changeset), do: changeset
 
-    defp absolute_path_error(field, value) when is_binary(value) do
+    defp absolute_path_error(field, value) do
       if Path.type(value) == :absolute, do: [], else: [{field, "must be an absolute path"}]
     end
-
-    defp absolute_path_error(field, _value), do: [{field, "must be an absolute path"}]
   end
 
   defmodule Worker do

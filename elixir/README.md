@@ -244,7 +244,7 @@ codex:
 - Dispatchability: the adapter marks an issue dispatchable only when the optional assignee and
   delegate routing filters match and a `Todo` issue has no non-terminal blocker. The generic scheduler then applies
   active/terminal states, required labels, claims, retries, and concurrency.
-- Tool: the Linear adapter advertises `linear_graphql`, accepting either a raw query string or an
+- Tool (review disabled): the Linear adapter advertises `linear_graphql`, accepting either a raw query string or an
   object with nonblank `query` and optional object `variables`. Symphony executes it host-side
   with the session-bound endpoint/token and strips declared token environment variables from the
   Codex child. `project_slug` scopes scheduler reads, not raw tool calls; the tool can access
@@ -265,6 +265,17 @@ codex:
   `tracker_response` (`429` is `tracker_rate_limited`), GraphQL/unknown payload failures to
   `tracker_payload`, and missing cursors to `tracker_pagination`; logs and tool responses carry the
   human-readable provider detail.
+
+With `review.enabled: true`, the Linear adapter instead exposes finite `linear_read`,
+`linear_comment`, `linear_attach_pr`, `linear_transition` and `symphony_review` operations. Raw
+GraphQL is rejected even if called by its old name. Arguments are strictly typed and cannot select
+another issue, replace the authoritative plan or supply completion evidence. The session captures
+its normalized repository before any worker turn. Handoff verifies through the installed runner;
+missing configuration/context, an unbound run, invalid output, stale evidence and provider errors
+return a bounded `success: false` result. Raw provider errors are not returned on this path.
+See [the protocol and lifecycle contract](docs/review-runner.md) for supported reads, transitions,
+receipt evidence and recovery. Review-enabled workers record proposed follow-up issues in their
+workpad because creating issues is intentionally outside this tool boundary.
 
 ### GitHub Issues adapter
 

@@ -86,6 +86,12 @@ runtime's injected tools. Review-disabled sessions expose `linear_graphql`; revi
 expose bounded `linear_read`, `linear_comment`, `linear_attach_pr`, `linear_transition`, and
 `symphony_review` tools. If neither boundary is present, treat that as blocked access.
 
+When review is enabled, instructions below to create another issue or edit issue fields beyond its
+state do not apply: record the proposed follow-up or required operator change in this issue's workpad.
+Use `symphony_review` to start/resume and inspect the installed run. A protected transition can only
+succeed after fresh runner verification; a comment or file claiming review success is insufficient.
+`Blocked` remains available for a real access, review-budget or missing-context blocker.
+
 ## Default posture
 
 - Start by determining the ticket's current status, then follow the matching flow for that status.

@@ -369,6 +369,7 @@ Top-level keys:
 - `hooks`
 - `agent`
 - `codex`
+- `review` (optional local Linear extension)
 
 Unknown keys SHOULD be ignored for forward compatibility.
 
@@ -378,6 +379,21 @@ Note:
   changing the core schema above.
 - Extensions SHOULD document their field schema, defaults, validation rules, and whether changes
   apply dynamically or require restart.
+
+#### Local Linear review extension
+
+The reference Elixir runtime supports `review.enabled` (boolean, default false),
+`review.executable` (literal absolute installed executable path), and `review.state_root` (literal
+absolute private directory). Enabled review requires local Linear workers, bounded workspace-write
+thread/turn sandboxes, and both paths outside all effective writable roots, including temporary
+and additional roots. Invalid enabled configuration fails dispatch validation.
+
+Configuration and repository identity bind before the first worker turn and remain fixed for the
+session across workflow reloads. Enabled sessions replace raw GraphQL with finite issue-bound read,
+comment, PR attachment, transition and review operations. Handoff requires fresh runner verification
+of the current plan and PR subject, complete execution evidence and a successful process exit.
+Disabled deployments preserve their existing tools. The complete versioned protocol, lifecycle and
+state classification are specified in [review-runner.md](elixir/docs/review-runner.md).
 
 #### 5.3.1 `tracker` (object)
 

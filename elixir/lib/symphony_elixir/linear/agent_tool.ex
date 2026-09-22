@@ -3,6 +3,7 @@ defmodule SymphonyElixir.Linear.AgentTool do
 
   alias SymphonyElixir.Linear.Client
   alias SymphonyElixir.ReviewOperation
+  require Logger
 
   @raw_tool "linear_graphql"
   @typed_tools ~w(symphony_review linear_read linear_comment linear_attach_pr linear_transition)
@@ -76,7 +77,8 @@ defmodule SymphonyElixir.Linear.AgentTool do
   defp execute_review_tool(@raw_tool, _arguments, _opts), do: failure("`linear_graphql` is disabled for review-enabled sessions; use typed Linear tools.")
 
   defp execute_review_tool(tool, arguments, opts) when tool in @typed_tools and is_map(arguments) do
-    with :ok <- reject_extra_fields(tool, arguments),
+    with :ok <- validate_arguments(tool, arguments),
+         :ok <- validate_context(opts),
          {:ok, result} <- dispatch_typed(tool, arguments, opts) do
       success(result)
     else
@@ -90,9 +92,8 @@ defmodule SymphonyElixir.Linear.AgentTool do
     operation = args["operation"]
     run_id = args["run_id"]
 
-    with true <- operation in ~w(start status resume cancel) or {:error, :invalid_review_operation},
-         {:ok, issue} <- fetch_authoritative_issue(opts) do
-      review_module(opts).execute(operation, run_id, review_context(issue, opts), Keyword.fetch!(opts, :review))
+    with {:ok, issue} <- fetch_authoritative_issue(opts) do
+      ReviewOperation.execute(operation, run_id, review_context(issue, opts), Keyword.fetch!(opts, :review))
     end
   end
 
@@ -102,7 +103,7 @@ defmodule SymphonyElixir.Linear.AgentTool do
     case args["operation"] do
       "issue" -> graphql(issue_query(), %{id: bound_issue_id(opts)}, opts)
       "comments" -> graphql(comments_query(), %{id: bound_issue_id(opts), after: args["cursor"]}, opts)
-      "document" when is_binary(id) -> graphql(document_query(), %{id: id}, opts)
+      "document" when is_binary(id) -> read_linked_document(id, opts)
       "workflow_states" -> graphql(states_query(), %{id: bound_issue_id(opts)}, opts)
       _ -> {:error, :invalid_linear_read_operation}
     end
@@ -113,7 +114,6 @@ defmodule SymphonyElixir.Linear.AgentTool do
       "create" -> graphql(comment_create_mutation(), %{issueId: bound_issue_id(opts), body: args["body"]}, opts)
       "reply" -> reply_to_comment(args, opts)
       "update" -> update_owned_comment(args, opts)
-      _ -> {:error, :invalid_linear_comment_operation}
     end
   end
 
@@ -131,31 +131,38 @@ defmodule SymphonyElixir.Linear.AgentTool do
     end
   end
 
-  defp dispatch_typed(_tool, _args, _opts), do: {:error, :unsupported_tool}
-
   defp maybe_verify_handoff(state, opts) do
     normalized = state["name"] |> to_string() |> String.trim() |> String.downcase()
     active_states = Keyword.fetch!(opts, :tracker_settings).active_states |> Enum.map(&String.downcase/1)
 
-    if normalized not in active_states or state["type"] == "completed" do
+    if state["type"] == "completed" or normalized in ~w(merging) or normalized == "in review" or
+         (normalized not in active_states and normalized != "blocked" and state["type"] not in ~w(backlog canceled)) do
       with {:ok, issue} <- fetch_authoritative_issue(opts),
-           {:ok, result} <- review_module(opts).execute("verify", nil, review_context(issue, opts), Keyword.fetch!(opts, :review)),
-           true <- complete_result?(result) or {:error, {:review_incomplete, result["reason"]}} do
+           {:ok, result} <- ReviewOperation.execute("verify", nil, review_context(issue, opts), Keyword.fetch!(opts, :review)),
+           true <- complete_result?(result, opts[:repository]) or {:error, :review_incomplete} do
         :ok
+      else
+        {:error, reason} ->
+          Logger.warning("Review handoff rejected issue_id=#{bound_issue_id(opts)} issue_identifier=#{Map.get(opts[:issue], :identifier)} session_id=#{opts[:session_id]}")
+          {:error, reason}
       end
     else
       :ok
     end
   end
 
-  defp complete_result?(%{"event" => "result", "status" => "complete", "evidence" => evidence}) when is_map(evidence) do
+  defp complete_result?(%{"event" => "result", "status" => "complete", "evidence" => evidence}, repository) when is_map(evidence) do
     string_fields = ~w(plan_revision plan_hash repository base head context_fingerprint method_fingerprint config_fingerprint)
 
     Enum.all?(string_fields, &(is_binary(evidence[&1]) and evidence[&1] != "")) and
-      is_list(evidence["receipts"])
+      evidence["repository"] == repository and match?([_ | _], evidence["receipts"]) and
+      Enum.all?(evidence["receipts"], fn receipt ->
+        is_map(receipt) and is_binary(receipt["path"]) and receipt["path"] != "" and
+          is_binary(receipt["sha256"]) and Regex.match?(~r/^[a-f0-9]{64}$/, receipt["sha256"])
+      end)
   end
 
-  defp complete_result?(_result), do: false
+  defp complete_result?(_result, _repository), do: false
 
   defp reply_to_comment(%{"parent_id" => parent_id, "body" => body}, opts) when is_binary(parent_id) do
     with {:ok, response} <- graphql(comment_membership_query(), %{id: parent_id}, opts),
@@ -170,8 +177,9 @@ defmodule SymphonyElixir.Linear.AgentTool do
     with {:ok, response} <- graphql(comment_membership_query(), %{id: comment_id}, opts),
          true <- get_in(response, ["data", "comment", "issue", "id"]) == bound_issue_id(opts) or {:error, :comment_not_on_bound_issue},
          true <-
-           get_in(response, ["data", "comment", "user", "id"]) ==
-             get_in(response, ["data", "viewer", "id"]) or
+           (is_binary(get_in(response, ["data", "viewer", "id"])) and
+              get_in(response, ["data", "comment", "user", "id"]) ==
+                get_in(response, ["data", "viewer", "id"])) or
              {:error, :comment_not_owned_by_agent} do
       graphql(comment_update_mutation(), %{id: comment_id, body: body}, opts)
     end
@@ -181,11 +189,12 @@ defmodule SymphonyElixir.Linear.AgentTool do
 
   defp fetch_authoritative_issue(opts) do
     with {:ok, response} <- graphql(issue_query(), %{id: bound_issue_id(opts)}, opts),
-         issue when is_map(issue) <- get_in(response, ["data", "issue"]) do
+         issue when is_map(issue) <- get_in(response, ["data", "issue"]),
+         true <- issue["id"] == bound_issue_id(opts) do
       {:ok, issue}
     else
-      nil -> {:error, :bound_issue_not_found}
       {:error, reason} -> {:error, reason}
+      _ -> {:error, :bound_issue_not_found}
     end
   end
 
@@ -198,14 +207,37 @@ defmodule SymphonyElixir.Linear.AgentTool do
       session_id: Keyword.fetch!(opts, :session_id)
     }
 
-  defp review_module(opts), do: Keyword.get(opts, :review_module, ReviewOperation)
+  defp bound_issue_id(opts), do: opts[:issue].id
 
-  defp bound_issue_id(opts) do
-    case Keyword.fetch!(opts, :issue) do
-      %{native_ref: %{"id" => id}} when is_binary(id) -> id
-      %{native_ref: %{id: id}} when is_binary(id) -> id
-      %{id: id} when is_binary(id) -> id
+  defp validate_context(opts) do
+    issue = opts[:issue]
+    fields = [:workspace, :repository, :thread_id, :session_id]
+
+    if is_map(issue) and is_binary(Map.get(issue, :id)) and Map.get(issue, :id) != "" and
+         Enum.all?(fields, &(is_binary(opts[&1]) and opts[&1] != "")) and
+         Path.type(opts[:workspace]) == :absolute and is_map(opts[:tracker_settings]) and is_list(Map.get(opts[:tracker_settings], :active_states)) do
+      :ok
+    else
+      {:error, :missing_bound_context}
     end
+  end
+
+  defp read_linked_document(id, opts) do
+    with {:ok, issue} <- fetch_authoritative_issue(opts),
+         {:ok, response} <- graphql(document_query(), %{id: id}, opts),
+         document when is_map(document) <- get_in(response, ["data", "document"]),
+         true <- linked_document?(document, issue) do
+      {:ok, response}
+    else
+      {:error, reason} -> {:error, reason}
+      _ -> {:error, :document_not_linked_to_bound_issue}
+    end
+  end
+
+  defp linked_document?(document, issue) do
+    get_in(document, ["issue", "id"]) == issue["id"] or
+      (is_binary(document["url"]) and document["url"] != "" and
+         String.contains?(issue["description"] || "", document["url"]))
   end
 
   defp graphql(query, variables, opts) do
@@ -267,18 +299,21 @@ defmodule SymphonyElixir.Linear.AgentTool do
 
   defp normalize_raw_arguments(_arguments), do: {:error, :invalid_arguments}
 
-  defp reject_extra_fields(tool, arguments) do
-    allowed =
-      case tool do
-        "symphony_review" -> ~w(operation run_id)
-        "linear_read" -> ~w(operation id cursor)
-        "linear_comment" -> ~w(operation body comment_id parent_id)
-        "linear_attach_pr" -> ~w(url title)
-        "linear_transition" -> ~w(state_id)
-      end
+  defp validate_arguments(tool, arguments) do
+    schema = Enum.find(typed_tool_specs(), &(&1["name"] == tool))["inputSchema"]
+    properties = schema["properties"]
 
-    if Enum.all?(Map.keys(arguments), &(&1 in allowed)), do: :ok, else: {:error, :unexpected_tool_argument}
+    valid =
+      Enum.all?(schema["required"], &Map.has_key?(arguments, &1)) and
+        Enum.all?(arguments, fn {key, value} -> valid_argument?(properties[key], value) end)
+
+    if valid, do: :ok, else: {:error, :invalid_tool_arguments}
   end
+
+  defp valid_argument?(nil, _value), do: false
+  defp valid_argument?(%{"enum" => values}, value), do: value in values
+  defp valid_argument?(%{"type" => "string"}, value), do: is_binary(value) and String.trim(value) != ""
+  defp valid_argument?(%{"type" => ["string", "null"]}, value), do: is_nil(value) or (is_binary(value) and value != "")
 
   defp find_state(response, state_id) do
     case Enum.find(get_in(response, ["data", "issue", "team", "states", "nodes"]) || [], &(&1["id"] == state_id)) do
@@ -288,9 +323,9 @@ defmodule SymphonyElixir.Linear.AgentTool do
   end
 
   defp validate_pr_repository(url, opts) do
-    with %URI{host: "github.com", path: path} <- URI.parse(url),
+    with %URI{scheme: "https", host: "github.com", path: path, userinfo: nil, query: nil, fragment: nil, port: 443} <- URI.parse(url),
          [owner, repo, "pull", number] <- String.split(String.trim(path, "/"), "/"),
-         {_number, ""} <- Integer.parse(number),
+         {number, ""} when number > 0 <- Integer.parse(number),
          true <-
            String.downcase(owner <> "/" <> repo) == Keyword.fetch!(opts, :repository) or
              {:error, :pr_repository_mismatch} do
@@ -309,21 +344,18 @@ defmodule SymphonyElixir.Linear.AgentTool do
     %{"success" => success, "output" => output, "contentItems" => [%{"type" => "inputText", "text" => output}]}
   end
 
-  defp format_error(:missing_query), do: "`linear_graphql` requires a non-empty `query` string."
-  defp format_error(:invalid_variables), do: "`linear_graphql.variables` must be a JSON object when provided."
-  defp format_error(:invalid_arguments), do: "`linear_graphql` expects a query string or an object with `query` and optional `variables`."
   defp format_error(reason) when is_atom(reason), do: "Tool execution rejected: #{reason}"
   defp format_error(_reason), do: "Tool execution rejected by the runtime; inspect runtime logs for details."
 
   defp issue_query,
     do:
-      "query SymphonyBoundIssue($id: String!) { issue(id: $id) { id identifier title description state { id name type } project { id name slugId url } attachments { nodes { id title url sourceType } } relations { nodes { id type relatedIssue { id identifier title state { name } } } } } }"
+      "query SymphonyBoundIssue($id: String!) { issue(id: $id) { id identifier title description state { id name type } project { id name slugId url } documents { nodes { id title url } } attachments { nodes { id title url sourceType } } relations { nodes { id type relatedIssue { id identifier title state { name } } } } } }"
 
   defp comments_query,
     do:
       "query SymphonyBoundComments($id: String!, $after: String) { issue(id: $id) { id comments(first: 50, after: $after) { nodes { id body createdAt updatedAt parent { id } user { id name } } pageInfo { hasNextPage endCursor } } } }"
 
-  defp document_query, do: "query SymphonyLinkedDocument($id: String!) { document(id: $id) { id title content url updatedAt } }"
+  defp document_query, do: "query SymphonyLinkedDocument($id: String!) { document(id: $id) { id title content url updatedAt issue { id } } }"
   defp states_query, do: "query SymphonyBoundStates($id: String!) { issue(id: $id) { id team { id states { nodes { id name type } } } } }"
   defp comment_membership_query, do: "query SymphonyBoundComment($id: String!) { viewer { id } comment(id: $id) { id issue { id } user { id } } }"
   defp comment_create_mutation, do: "mutation SymphonyCreateComment($issueId: String!, $body: String!) { commentCreate(input: {issueId: $issueId, body: $body}) { success comment { id url } } }"

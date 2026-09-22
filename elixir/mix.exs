@@ -15,15 +15,10 @@ defmodule SymphonyElixir.MixProject do
         ignore_modules: [
           SymphonyElixir.Asana.Client,
           SymphonyElixir.Config,
-          SymphonyElixir.Config.Schema,
-          SymphonyElixir.Config.Schema.Review,
-          SymphonyElixir.Config.Schema.StringOrList,
           SymphonyElixir.GitHub.Client,
           SymphonyElixir.GitLab.Client,
           SymphonyElixir.Jira.Client,
           SymphonyElixir.Linear.Client,
-          SymphonyElixir.Linear.AgentTool,
-          SymphonyElixir.ReviewOperation,
           SymphonyElixir.SpecsCheck,
           SymphonyElixir.Orchestrator,
           SymphonyElixir.Orchestrator.State,
@@ -51,7 +46,8 @@ defmodule SymphonyElixir.MixProject do
       ],
       test_ignore_filters: [
         "test/support/snapshot_support.exs",
-        "test/support/test_support.exs"
+        "test/support/test_support.exs",
+        "test/support/review_runner.exs"
       ],
       dialyzer: [
         plt_add_apps: [:mix]
