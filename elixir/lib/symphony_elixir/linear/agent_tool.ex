@@ -318,11 +318,13 @@ defmodule SymphonyElixir.Linear.AgentTool do
   defp states_query, do: "query SymphonyBoundStates($id: String!) { issue(id: $id) { id team { id states { nodes { id name type } } } } }"
   defp comment_membership_query, do: "query SymphonyBoundComment($id: String!) { viewer { id } comment(id: $id) { id issue { id } user { id } } }"
   defp comment_create_mutation, do: "mutation SymphonyCreateComment($issueId: String!, $body: String!) { commentCreate(input: {issueId: $issueId, body: $body}) { success comment { id url } } }"
+
   defp comment_reply_mutation,
     do:
       "mutation SymphonyReplyComment($issueId: String!, $parentId: String!, $body: String!) { commentCreate(input: {issueId: $issueId, parentId: $parentId, body: $body}) { success comment { id url } } }"
 
   defp comment_update_mutation, do: "mutation SymphonyUpdateComment($id: String!, $body: String!) { commentUpdate(id: $id, input: {body: $body}) { success comment { id url } } }"
+
   defp attach_pr_mutation,
     do:
       "mutation SymphonyAttachPR($issueId: String!, $url: String!, $title: String) { attachmentLinkGitHubPR(issueId: $issueId, url: $url, title: $title, linkKind: links) { success attachment { id url title } } }"
