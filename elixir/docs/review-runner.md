@@ -13,7 +13,8 @@ review:
 ```
 
 Both paths are absolute and fixed for an app-server session. The executable must be an installed
-executable file. The private state root must be outside the workspace, `/tmp`, `TMPDIR`, and every
+executable file outside worker-writable roots. The state root must be an existing private directory
+(no group/other permissions) outside the workspace, `/tmp`, `TMPDIR`, and every
 additional Codex-writable root. Review-enabled operation supports only local workers with the Linear
 tracker. Invalid enabled configuration prevents startup; it never falls back to raw GraphQL.
 

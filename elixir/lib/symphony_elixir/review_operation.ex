@@ -80,7 +80,8 @@ defmodule SymphonyElixir.ReviewOperation do
         run_control(review.executable, request_path, request)
       end
 
-    {:reply, result, state}
+    next_state = maybe_reap_canceled_run(operation, issue_id, result, state)
+    {:reply, result, next_state}
   end
 
   @impl true
@@ -205,6 +206,17 @@ defmodule SymphonyElixir.ReviewOperation do
   rescue
     error -> {:error, {:invalid_review_runner_output, Exception.message(error)}}
   end
+
+  defp maybe_reap_canceled_run("cancel", issue_id, {:ok, %{"status" => "canceled"}}, state) do
+    case Map.get(state, issue_id) do
+      %{pid: pid} when is_pid(pid) -> Process.exit(pid, :kill)
+      _ -> :ok
+    end
+
+    Map.delete(state, issue_id)
+  end
+
+  defp maybe_reap_canceled_run(_operation, _issue_id, _result, state), do: state
 
   defp decode_event!(line, request) do
     event = Jason.decode!(line)

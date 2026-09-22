@@ -257,8 +257,17 @@ defmodule SymphonyElixir.Linear.AgentTool do
   end
 
   defp repository_from_workspace(workspace) do
-    {remote, 0} = System.cmd("git", ["-C", workspace, "config", "--get", "remote.origin.url"])
-    remote |> String.trim() |> String.replace(~r{^(?:https://github\.com/|git@github\.com:)}, "") |> String.trim_trailing(".git") |> String.downcase()
+    case System.cmd("git", ["-C", workspace, "config", "--get", "remote.origin.url"], stderr_to_stdout: true) do
+      {remote, 0} ->
+        remote
+        |> String.trim()
+        |> String.replace(~r{^(?:https://github\.com/|git@github\.com:)}, "")
+        |> String.trim_trailing(".git")
+        |> String.downcase()
+
+      {_output, _status} ->
+        nil
+    end
   end
 
   defp success(payload), do: response(true, payload)
