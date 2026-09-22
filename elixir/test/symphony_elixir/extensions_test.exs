@@ -215,6 +215,17 @@ defmodule SymphonyElixir.ExtensionsTest do
     assert binding.tool_specs == []
     assert binding.secret_environment_names == []
 
+    workspace = Path.join(System.tmp_dir!(), "tracker-binding-#{System.unique_integer([:positive])}")
+    File.mkdir_p!(workspace)
+    System.cmd("git", ["-C", workspace, "init", "-b", "main"])
+    System.cmd("git", ["-C", workspace, "remote", "add", "origin", "git@github.com:Driver-AI/Symphony-Upstream.git/"])
+
+    assert SymphonyElixir.Tracker.bind_agent_tools(workspace).repository ==
+             "driver-ai/symphony-upstream"
+
+    assert SymphonyElixir.Tracker.bind_agent_tools(Path.join(workspace, "missing")).repository == nil
+    File.rm_rf!(workspace)
+
     assert SymphonyElixir.Tracker.execute_bound_agent_tool(binding, "not_a_memory_tool", %{})[
              "success"
            ] == false

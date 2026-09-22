@@ -135,8 +135,8 @@ defmodule SymphonyElixir.Tracker do
     remote
     |> String.trim()
     |> String.replace(~r{^(?:https://github\.com/|git@github\.com:)}, "")
-    |> String.trim_trailing(".git")
     |> String.trim_trailing("/")
+    |> String.trim_trailing(".git")
     |> String.downcase()
   end
 
