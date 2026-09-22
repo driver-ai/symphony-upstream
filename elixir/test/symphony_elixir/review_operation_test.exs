@@ -95,6 +95,88 @@ defmodule SymphonyElixir.ReviewOperationTest do
     assert {:ok, _} = Task.await(control)
   end
 
+  test "a control deadline returns without canceling the runner or losing its binding", c do
+    assert {:ok, _} = execute(c, "start")
+    ReviewRunnerFixture.configure!(c.review.state_root, %{exit_gate: true})
+
+    control =
+      Task.async(fn ->
+        ReviewOperation.execute("verify", nil, c.context, c.review, server: c.server, control_timeout_ms: 20)
+      end)
+
+    ReviewRunnerFixture.await_call(c.review.state_root, 2)
+    reply = Task.yield(control, 200)
+    assert Enum.any?(Task.Supervisor.children(SymphonyElixir.ReviewTaskSupervisor), &Process.alive?/1)
+    File.write!(Path.join(c.review.state_root, "finish"), "")
+    if is_nil(reply), do: Task.await(control)
+    assert reply == {:ok, {:error, :review_control_timeout}}
+    assert {:ok, %{"status" => "complete", "run_id" => "run-1"}} = execute(c, "verify")
+  end
+
+  test "runner diagnostics on stderr do not corrupt successful protocol events", c do
+    ReviewRunnerFixture.configure!(c.review.state_root, %{stderr: "runner diagnostic outside NDJSON"})
+    assert {:ok, _} = execute(c, "start")
+    assert {:ok, %{"status" => "complete"}} = execute(c, "verify")
+  end
+
+  test "repository identity is pinned before a run and survives an owner restart", c do
+    assert {:ok, "driver-ai/runtime"} = bind_repository(c)
+    assert ReviewRunnerFixture.calls(c.review.state_root) == []
+    assert {:error, :review_run_missing} = execute(c, "resume")
+    stop_supervised!(ReviewOperation)
+    start_supervised!({ReviewOperation, name: c.server})
+    assert {:ok, "driver-ai/runtime"} = bind_repository(c)
+    assert {:error, :review_repository_mismatch} = bind_repository(c, "attacker/decoy")
+    assert {:ok, _} = execute(c, "start")
+    assert hd(ReviewRunnerFixture.calls(c.review.state_root))["execution"]["repository"] == "driver-ai/runtime"
+  end
+
+  test "repository capture fails closed on missing context, corrupt storage and owner failure", c do
+    assert {:error, :review_repository_not_captured} = bind_repository(c, "driver-ai/runtime", nil)
+    assert {:ok, _} = bind_repository(c)
+    [binding] = Path.wildcard(Path.join(c.review.state_root, "runtime-bindings/*.json"))
+    File.write!(binding, "corrupt")
+    assert {:error, :review_binding_invalid} = bind_repository(c)
+    File.rm!(binding)
+    File.mkdir!(binding <> ".tmp")
+    assert {:error, :review_binding_write_failed} = bind_repository(c)
+    stop_supervised!(ReviewOperation)
+    assert {:error, :review_owner_unavailable} = bind_repository(c)
+  end
+
+  test "completed resume retains completion and a later start gets a fresh identity", c do
+    assert {:ok, _} = execute(c, "start")
+    await_binding_status(c.review.state_root, "complete")
+    assert {:ok, _} = execute(c, "resume")
+    await_binding_status(c.review.state_root, "complete")
+    assert {:ok, _} = execute(c, "start")
+    [first, resume, next] = ReviewRunnerFixture.calls(c.review.state_root)
+    assert resume["request_id"] == first["request_id"]
+    assert next["operation"] == "start"
+    assert next["request_id"] != first["request_id"]
+  end
+
+  test "confirmed cancellation and graceful owner shutdown release idle transport processes", c do
+    for action <- [:cancel, :shutdown] do
+      ReviewRunnerFixture.configure!(c.review.state_root, %{pid_file: true, exit_gate: true})
+      assert {:ok, _} = execute(c, "start")
+      pid = File.read!(Path.join(c.review.state_root, "runner-pid"))
+      assert {_, 0} = System.cmd("kill", ["-0", pid], stderr_to_stdout: true)
+
+      case action do
+        :cancel ->
+          ReviewRunnerFixture.configure!(c.review.state_root, %{mode: "canceled"})
+          assert {:ok, %{"status" => "canceled"}} = execute(c, "cancel")
+
+        :shutdown ->
+          stop_supervised!(ReviewOperation)
+      end
+
+      await_process_exit(pid)
+      assert File.ls!(Path.join(c.review.state_root, "requests")) == []
+    end
+  end
+
   test "unknown cancellation retains ownership; confirmed cancellation permits a new start", c do
     ReviewRunnerFixture.configure!(c.review.state_root, %{exit_gate: true})
     assert {:ok, _} = execute(c, "start")
@@ -222,4 +304,34 @@ defmodule SymphonyElixir.ReviewOperationTest do
 
   defp execute(c, operation, run_id \\ nil),
     do: ReviewOperation.execute(operation, run_id, c.context, c.review, server: c.server)
+
+  defp bind_repository(c, repository \\ "driver-ai/runtime", issue_id \\ "issue-1") do
+    ReviewOperation.bind_repository(issue_id, repository, c.review, server: c.server)
+  end
+
+  defp await_binding_status(root, status, attempts \\ 100)
+  defp await_binding_status(_root, _status, 0), do: flunk("runner completion was not persisted")
+
+  defp await_binding_status(root, status, attempts) do
+    [binding] = Path.wildcard(Path.join(root, "runtime-bindings/*.json"))
+
+    unless Jason.decode!(File.read!(binding))["status"] == status do
+      Process.sleep(10)
+      await_binding_status(root, status, attempts - 1)
+    end
+  end
+
+  defp await_process_exit(pid, attempts \\ 100)
+  defp await_process_exit(_pid, 0), do: flunk("runner transport process outlived its owner")
+
+  defp await_process_exit(pid, attempts) do
+    case System.cmd("kill", ["-0", pid], stderr_to_stdout: true) do
+      {_, 0} ->
+        Process.sleep(10)
+        await_process_exit(pid, attempts - 1)
+
+      {_, _nonzero} ->
+        :ok
+    end
+  end
 end

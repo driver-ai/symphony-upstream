@@ -92,7 +92,8 @@ defmodule SymphonyElixir.Linear.AgentTool do
     operation = args["operation"]
     run_id = args["run_id"]
 
-    with {:ok, issue} <- fetch_authoritative_issue(opts) do
+    with :ok <- validate_repository(opts),
+         {:ok, issue} <- fetch_authoritative_issue(opts) do
       ReviewOperation.execute(operation, run_id, review_context(issue, opts), Keyword.fetch!(opts, :review))
     end
   end
@@ -118,7 +119,8 @@ defmodule SymphonyElixir.Linear.AgentTool do
   end
 
   defp dispatch_typed("linear_attach_pr", args, opts) do
-    with :ok <- validate_pr_repository(args["url"], opts) do
+    with :ok <- validate_repository(opts),
+         :ok <- validate_pr_repository(args["url"], opts) do
       graphql(attach_pr_mutation(), %{issueId: bound_issue_id(opts), url: args["url"], title: args["title"]}, opts)
     end
   end
@@ -137,7 +139,8 @@ defmodule SymphonyElixir.Linear.AgentTool do
 
     if state["type"] == "completed" or normalized in ~w(merging) or normalized == "in review" or
          (normalized not in active_states and normalized != "blocked" and state["type"] not in ~w(backlog canceled)) do
-      with {:ok, issue} <- fetch_authoritative_issue(opts),
+      with :ok <- validate_repository(opts),
+           {:ok, issue} <- fetch_authoritative_issue(opts),
            {:ok, result} <- ReviewOperation.execute("verify", nil, review_context(issue, opts), Keyword.fetch!(opts, :review)),
            true <- complete_result?(result, opts[:repository]) or {:error, :review_incomplete} do
         :ok
@@ -211,7 +214,7 @@ defmodule SymphonyElixir.Linear.AgentTool do
 
   defp validate_context(opts) do
     issue = opts[:issue]
-    fields = [:workspace, :repository, :thread_id, :session_id]
+    fields = [:workspace, :thread_id, :session_id]
 
     if is_map(issue) and is_binary(Map.get(issue, :id)) and Map.get(issue, :id) != "" and
          Enum.all?(fields, &(is_binary(opts[&1]) and opts[&1] != "")) and
@@ -219,6 +222,14 @@ defmodule SymphonyElixir.Linear.AgentTool do
       :ok
     else
       {:error, :missing_bound_context}
+    end
+  end
+
+  defp validate_repository(opts) do
+    cond do
+      not is_nil(opts[:review_repository_error]) -> {:error, opts[:review_repository_error]}
+      not is_binary(opts[:repository]) or opts[:repository] == "" -> {:error, :review_repository_not_captured}
+      true -> :ok
     end
   end
 
@@ -323,7 +334,7 @@ defmodule SymphonyElixir.Linear.AgentTool do
   end
 
   defp validate_pr_repository(url, opts) do
-    with %URI{scheme: "https", host: "github.com", path: path, userinfo: nil, query: nil, fragment: nil, port: 443} <- URI.parse(url),
+    with {:ok, %URI{scheme: "https", host: "github.com", path: path, userinfo: nil, query: nil, fragment: nil, port: 443}} when is_binary(path) <- URI.new(url),
          [owner, repo, "pull", number] <- String.split(String.trim(path, "/"), "/"),
          {number, ""} when number > 0 <- Integer.parse(number),
          true <-
@@ -331,7 +342,7 @@ defmodule SymphonyElixir.Linear.AgentTool do
              {:error, :pr_repository_mismatch} do
       :ok
     else
-      {:error, reason} -> {:error, reason}
+      {:error, :pr_repository_mismatch} = error -> error
       _ -> {:error, :invalid_github_pr_url}
     end
   end

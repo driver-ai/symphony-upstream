@@ -10,8 +10,9 @@ defmodule SymphonyElixir.ReviewOperation do
 
   @operations ~w(start resume status cancel verify)
   @launch_operations ~w(start resume)
-  @terminal_statuses ~w(complete canceled)
+  @fresh_start_statuses ~w(unstarted complete canceled)
   @max_event_bytes 65_536
+  @control_timeout_ms 5_000
 
   @type context :: %{
           required(:issue) => map(),
@@ -27,7 +28,20 @@ defmodule SymphonyElixir.ReviewOperation do
 
   @spec execute(String.t(), String.t() | nil, context(), map(), keyword()) :: {:ok, map()} | {:error, term()}
   def execute(operation, run_id, context, review, opts \\ []) when operation in @operations do
-    GenServer.call(Keyword.get(opts, :server, __MODULE__), {:execute, operation, run_id, context, review}, :infinity)
+    timeout = if operation in @launch_operations, do: :infinity, else: Keyword.get(opts, :control_timeout_ms, @control_timeout_ms)
+    GenServer.call(Keyword.get(opts, :server, __MODULE__), {:execute, operation, run_id, context, review}, timeout)
+  catch
+    :exit, {:timeout, _call} -> {:error, :review_control_timeout}
+    :exit, _reason -> {:error, :review_owner_unavailable}
+  end
+
+  @spec bind_repository(String.t() | nil, String.t() | nil, map(), keyword()) :: {:ok, String.t()} | {:error, term()}
+  def bind_repository(issue_id, repository, review, opts \\ []) do
+    if is_binary(issue_id) and issue_id != "" and is_binary(repository) and repository != "" do
+      GenServer.call(Keyword.get(opts, :server, __MODULE__), {:bind_repository, issue_id, repository, review}, @control_timeout_ms)
+    else
+      {:error, :review_repository_not_captured}
+    end
   catch
     :exit, _reason -> {:error, :review_owner_unavailable}
   end
@@ -39,6 +53,28 @@ defmodule SymphonyElixir.ReviewOperation do
   end
 
   @impl true
+  def handle_call({:bind_repository, issue_id, repository, review}, _from, state) do
+    result =
+      case read_binding(review.state_root, issue_id) do
+        {:ok, nil} ->
+          case write_binding(review.state_root, issue_id, nil, nil, repository, "unstarted") do
+            :ok -> {:ok, repository}
+            {:error, _reason} -> {:error, :review_binding_write_failed}
+          end
+
+        {:ok, %{"repository" => ^repository}} ->
+          {:ok, repository}
+
+        {:ok, _binding} ->
+          {:error, :review_repository_mismatch}
+
+        {:error, _reason} = error ->
+          error
+      end
+
+    {:reply, result, state}
+  end
+
   def handle_call({:execute, operation, run_id, context, review}, from, state) do
     issue_id = context.issue["id"]
     active = Map.get(state.tasks, state.runs[issue_id])
@@ -225,8 +261,9 @@ defmodule SymphonyElixir.ReviewOperation do
   end
 
   defp request_identity("start", nil), do: {:ok, "start", Ecto.UUID.generate(), nil}
-  defp request_identity("start", %{"status" => status}) when status in @terminal_statuses, do: request_identity("start", nil)
+  defp request_identity("start", %{"status" => status}) when status in @fresh_start_statuses, do: request_identity("start", nil)
   defp request_identity(operation, nil) when operation != "start", do: {:error, :review_run_missing}
+  defp request_identity(_operation, %{"request_id" => nil}), do: {:error, :review_run_missing}
 
   defp request_identity(operation, binding) when operation in @launch_operations,
     do: {:ok, "resume", binding["request_id"], binding["run_id"]}
@@ -246,6 +283,10 @@ defmodule SymphonyElixir.ReviewOperation do
 
   defp decode_binding(payload) do
     case Jason.decode(payload) do
+      {:ok, %{"request_id" => nil, "run_id" => nil, "repository" => repository, "status" => "unstarted"} = binding}
+      when is_binary(repository) ->
+        {:ok, binding}
+
       {:ok, %{"request_id" => request_id, "run_id" => run_id, "repository" => repository, "status" => status} = binding}
       when is_binary(request_id) and (is_binary(run_id) or is_nil(run_id)) and
              is_binary(repository) and is_binary(status) ->

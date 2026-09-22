@@ -13,8 +13,14 @@ defmodule SymphonyElixir.ReviewRunnerFixture do
 
     File.write!(executable, """
     #!/usr/bin/env python3
-    import json, os, pathlib, signal, sys, time
+    import json, os, pathlib, signal, sys, threading, time
     signal.signal(signal.SIGPIPE, signal.SIG_DFL)
+    # The transport must release idle processes too, without needing another event write.
+    def watch_transport():
+        while os.read(0, 4096):
+            pass
+        os._exit(0)
+    threading.Thread(target=watch_transport, daemon=True).start()
     request = json.load(open(sys.argv[2]))
     root = pathlib.Path(request["state_root"])
     with open(root / "calls", "a") as calls:
@@ -55,6 +61,8 @@ defmodule SymphonyElixir.ReviewRunnerFixture do
     if request["operation"] in ("start", "resume"):
         subject_file.write_text(json.dumps(subject))
     emit("accepted")
+    if options.get("stderr"):
+        print(options["stderr"], file=sys.stderr, flush=True)
     if options.get("duplicate_accept"):
         emit("accepted")
     if options.get("progress"):

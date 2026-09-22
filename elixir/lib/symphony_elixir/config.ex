@@ -161,34 +161,30 @@ defmodule SymphonyElixir.Config do
   end
 
   defp validate_review_executable(path, settings) do
-    cond do
-      not File.regular?(path) -> {:error, {:invalid_review_executable, path}}
-      not executable?(path) -> {:error, {:review_executable_not_executable, path}}
-      writable_path_overlap?(path, settings) -> {:error, {:review_executable_worker_writable, path}}
-      true -> :ok
+    case File.stat(path) do
+      {:ok, %File.Stat{type: :regular, mode: mode}} ->
+        cond do
+          Bitwise.band(mode, 0o111) == 0 -> {:error, {:review_executable_not_executable, path}}
+          writable_path_overlap?(path, settings) -> {:error, {:review_executable_worker_writable, path}}
+          true -> :ok
+        end
+
+      _ ->
+        {:error, {:invalid_review_executable, path}}
     end
   end
 
   defp validate_review_state_root(path, settings) do
-    cond do
-      not File.dir?(path) -> {:error, {:invalid_review_state_root, path}}
-      not private_directory?(path) -> {:error, {:review_state_root_not_private, path}}
-      writable_path_overlap?(path, settings) -> {:error, {:review_state_root_worker_writable, path}}
-      true -> :ok
-    end
-  end
-
-  defp executable?(path) do
     case File.stat(path) do
-      {:ok, %{mode: mode}} -> Bitwise.band(mode, 0o111) != 0
-      _ -> false
-    end
-  end
+      {:ok, %File.Stat{type: :directory, mode: mode}} ->
+        cond do
+          Bitwise.band(mode, 0o077) != 0 -> {:error, {:review_state_root_not_private, path}}
+          writable_path_overlap?(path, settings) -> {:error, {:review_state_root_worker_writable, path}}
+          true -> :ok
+        end
 
-  defp private_directory?(path) do
-    case File.stat(path) do
-      {:ok, %{type: :directory, mode: mode}} -> Bitwise.band(mode, 0o077) == 0
-      _ -> false
+      _ ->
+        {:error, {:invalid_review_state_root, path}}
     end
   end
 
@@ -215,7 +211,7 @@ defmodule SymphonyElixir.Config do
   defp canonical_path(path) when is_binary(path) do
     # stat detects symlink cycles before the segment resolver follows them.
     case File.stat(path) do
-      {:error, reason} when reason != :enoent ->
+      {:error, :eloop} ->
         "/"
 
       _ ->

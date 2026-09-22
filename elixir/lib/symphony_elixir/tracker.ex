@@ -7,8 +7,9 @@ defmodule SymphonyElixir.Tracker do
   leak into scheduler policy.
   """
 
-  alias SymphonyElixir.Config
+  alias SymphonyElixir.{Config, ReviewOperation}
   alias SymphonyElixir.Tracker.Issue
+  require Logger
 
   @adapters %{
     "asana" => SymphonyElixir.Asana.Adapter,
@@ -47,17 +48,19 @@ defmodule SymphonyElixir.Tracker do
   app-server session so tool advertisement and execution cannot drift across a
   workflow reload.
   """
-  @spec bind_agent_tools(Path.t() | nil) :: map()
-  def bind_agent_tools(workspace \\ nil) do
+  @spec bind_agent_tools(Path.t() | nil, map() | nil) :: map()
+  def bind_agent_tools(workspace \\ nil, issue \\ nil) do
     settings = Config.settings!()
     tracker_settings = settings.tracker
     adapter = adapter_for_settings!(tracker_settings)
+    {repository, repository_error} = bind_review_repository(settings.review, issue, capture_repository(workspace))
 
     %{
       adapter: adapter,
       tracker_settings: tracker_settings,
       review: settings.review,
-      repository: capture_repository(workspace),
+      repository: repository,
+      review_repository_error: repository_error,
       tool_specs: adapter_agent_tool_specs(adapter, settings.review),
       secret_environment_names: adapter_secret_environment_names(adapter, tracker_settings)
     }
@@ -78,6 +81,7 @@ defmodule SymphonyElixir.Tracker do
       |> Keyword.put(:tracker_settings, tracker_settings)
       |> Keyword.put(:review, binding[:review])
       |> Keyword.put(:repository, binding[:repository])
+      |> Keyword.put(:review_repository_error, binding[:review_repository_error])
     )
   end
 
@@ -121,6 +125,21 @@ defmodule SymphonyElixir.Tracker do
 
       true ->
         []
+    end
+  end
+
+  defp bind_review_repository(%{enabled: false}, _issue, repository), do: {repository, nil}
+
+  defp bind_review_repository(review, issue, repository) do
+    issue_id = if is_map(issue), do: Map.get(issue, :id)
+
+    case ReviewOperation.bind_repository(issue_id, repository, review) do
+      {:ok, pinned} ->
+        {pinned, nil}
+
+      {:error, reason} ->
+        Logger.warning("Review repository binding rejected issue_id=#{issue_id} reason=#{inspect(reason)}")
+        {nil, reason}
     end
   end
 

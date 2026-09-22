@@ -112,6 +112,46 @@ defmodule SymphonyElixir.ReviewConfigTest do
     assert {:error, {:review_state_root_worker_writable, _}} = Config.validate_settings(put_in(settings.review.state_root, Path.join(c.root, "state-link")))
   end
 
+  test "an unreadable writable-root ancestor fails closed", c do
+    denied = Path.join(c.root, "denied")
+    File.mkdir!(denied)
+    File.chmod!(denied, 0o000)
+
+    try do
+      policy = %{"type" => "workspaceWrite", "writableRoots" => [Path.join(denied, "child")]}
+      settings = c.settings
+
+      assert {:error, {:review_executable_worker_writable, _}} =
+               Config.validate_settings(put_in(settings.codex.turn_sandbox_policy, policy))
+    after
+      File.chmod!(denied, 0o700)
+    end
+  end
+
+  test "invalid startup workflows expose actionable errors before the store has a cached configuration" do
+    workflow = Workflow.workflow_file_path()
+    :ok = Supervisor.terminate_child(SymphonyElixir.Supervisor, WorkflowStore)
+
+    try do
+      File.rm!(workflow)
+      assert_raise ArgumentError, ~r/Missing WORKFLOW.md/, fn -> Config.settings!() end
+      assert Config.workflow_prompt() =~ "You are working on an issue"
+      File.write!(workflow, "---\n- list\n---\n")
+      assert_raise ArgumentError, ~r/front matter must decode to a map/, fn -> Config.settings!() end
+      File.write!(workflow, "---\nvalue: [\n---\n")
+      assert_raise ArgumentError, ~r/Failed to parse WORKFLOW.md/, fn -> Config.settings!() end
+      write_workflow_file!(workflow, max_concurrent_agents: "bad")
+      assert_raise ArgumentError, ~r/agent.max_concurrent_agents/, fn -> Config.settings!() end
+      write_workflow_file!(workflow, tracker_kind: nil)
+      assert_raise ArgumentError, ~r/missing_tracker_kind/, fn -> Config.settings!() end
+      write_workflow_file!(workflow)
+      assert_raise ArgumentError, ~r/Invalid codex turn sandbox policy/, fn -> Config.codex_turn_sandbox_policy(:invalid) end
+    after
+      write_workflow_file!(workflow)
+      {:ok, _pid} = Supervisor.restart_child(SymphonyElixir.Supervisor, WorkflowStore)
+    end
+  end
+
   test "session binding captures the nested clone and survives remote and workflow changes", c do
     repo = Path.join(c.review.workspace, "repo")
     File.mkdir_p!(repo)
@@ -123,7 +163,7 @@ defmodule SymphonyElixir.ReviewConfigTest do
     enabled = "review:\n  enabled: true\n  executable: #{c.review.executable}\n  state_root: #{c.review.state_root}\n"
     File.write!(workflow, String.replace(source, "---\n", "---\n" <> enabled, global: false))
     assert :ok = WorkflowStore.force_reload()
-    binding = DynamicTool.bind(c.review.workspace)
+    binding = DynamicTool.bind(c.review.workspace, %Issue{id: "config-session", identifier: "SYM-CONFIG"})
     assert binding.repository == "driver-ai/runtime"
     assert binding.review.enabled
     assert Enum.map(binding.tool_specs, & &1["name"]) == ~w(symphony_review linear_read linear_comment linear_attach_pr linear_transition)
@@ -136,5 +176,24 @@ defmodule SymphonyElixir.ReviewConfigTest do
     assert binding.review.executable == c.review.executable
     {_, 0} = System.cmd("git", ["-C", repo, "remote", "set-url", "origin", "https://example.test/other/repo.git"])
     assert DynamicTool.bind(c.review.workspace).repository == nil
+  end
+
+  test "a later session cannot adopt a rewritten remote before the first review starts", c do
+    repo = Path.join(c.review.workspace, "repo")
+    File.mkdir_p!(repo)
+    {_, 0} = System.cmd("git", ["init", "-q", repo])
+    {_, 0} = System.cmd("git", ["-C", repo, "remote", "add", "origin", "https://github.com/driver-ai/runtime.git"])
+    workflow = Workflow.workflow_file_path()
+    write_workflow_file!(workflow, workspace_root: c.review.workspace)
+    enabled = "review:\n  enabled: true\n  executable: #{c.review.executable}\n  state_root: #{c.review.state_root}\n"
+    File.write!(workflow, String.replace(File.read!(workflow), "---\n", "---\n" <> enabled, global: false))
+    assert :ok = WorkflowStore.force_reload()
+    issue = %Issue{id: "config-rebinding", identifier: "SYM-REBIND"}
+    assert DynamicTool.bind(c.review.workspace, issue).repository == "driver-ai/runtime"
+    assert ReviewRunnerFixture.calls(c.review.state_root) == []
+    {_, 0} = System.cmd("git", ["-C", repo, "remote", "set-url", "origin", "https://github.com/attacker/decoy.git"])
+    rebound = DynamicTool.bind(c.review.workspace, issue)
+    assert rebound.repository == nil
+    assert rebound.review_repository_error == :review_repository_mismatch
   end
 end

@@ -18,6 +18,11 @@ executable file outside worker-writable roots. The state root must be an existin
 additional Codex-writable root. Review-enabled operation supports only local workers with the Linear
 tracker. Invalid enabled configuration prevents startup; it never falls back to raw GraphQL.
 
+These protections rely on the Codex sandbox and trusted runtime-side hooks and launch commands.
+They do not isolate same-user programs running outside that sandbox. Such hooks must not execute
+untrusted workspace code with access to the runtime's trusted paths; stronger operating-system
+separation belongs to deployment policy.
+
 The runtime invokes the executable directly, without a shell:
 
 ```text
@@ -75,7 +80,10 @@ or more `progress` events, then `result`:
 
 Result status is `running`, `complete`, `incomplete`, `canceled`, or `unknown`. Non-complete results
 include a nonempty human-readable `reason` of at most 2,000 bytes. Events are limited to 65,536 bytes
-each; total streaming duration is not limited. Identical repeated acceptance is idempotent, but later
+each; paid-run streaming duration is not limited. Status, cancel, and verify callers wait at most
+five seconds, then receive `review_control_timeout`. The runtime continues consuming that control
+process: a caller timeout neither cancels paid work nor clears its binding or accounting. A later
+handoff must perform a new successful verification. Identical repeated acceptance is idempotent, but later
 events must retain the accepted run ID. Output after a result is invalid. Completion must include
 nonempty evidence fields and at least one receipt with a nonempty `path` and a 64-character lowercase
 hexadecimal `sha256`. The evidence repository must equal the captured `owner/repository` identity.
@@ -98,6 +106,12 @@ exit. Accounting records remain runner-owned and are never deleted by the runtim
 ownership is supervised separately from worker/orchestrator restarts. The owner singleton does not
 load mutable workflow settings: every call carries the immutable runtime-created session binding.
 
+The runner transport process must monitor stdin and exit on EOF, and must also exit on a broken
+stdout pipe. This lets confirmed cancellation and graceful runtime shutdown release even an idle
+transport when its OTP owner closes the port. Transport exit alone does not prove paid descendants
+were canceled: the runner's cancel operation must reap its owned work before reporting `canceled`,
+and recovery must retain unknown accounting until the runner reconciles it.
+
 Immediately before a handoff transition, Symphony
 refetches the issue and calls `verify`. The destination is resolved from the bound issue's team, so
 renaming a review or completion state does not bypass the gate. Completed states, In Review and
@@ -117,10 +131,16 @@ Review-disabled deployments retain their existing provider tools unchanged. Link
 require a document attached to this issue or its canonical URL in the current issue description.
 Comment updates require matching issue and viewer ownership; replies require matching issue.
 Missing session context and invalid arguments return bounded failures before any provider call.
+Missing or mismatched repository identity rejects review, PR attachment, and protected transitions
+with a repository-specific reason. Issue reads, workpad comments, and non-handoff transitions remain
+available so the worker can report the failure and move the issue to Blocked.
 
-The repository is captured before the first Codex turn from the hook-created `workspace/repo` clone,
+The repository is captured before the issue's first Codex turn from the hook-created `workspace/repo` clone,
 or from the workspace itself when it is a repository. HTTPS, Git SSH and SSH-URL GitHub origins
 normalize to lowercase `owner/repository`. Parent checkouts and non-GitHub remotes are not accepted.
+The owner pins this identity in the issue's existing runtime binding before any review starts.
+Later sessions compare their capture against that durable identity and fail closed on disagreement,
+including after a runtime restart. Rewriting the workspace's Git remote cannot rebind the issue.
 The runner must reject a live repository or published PR subject that disagrees with this binding.
 It alone parses/hashes the plan and resolves current Git/GitHub base/head: the runtime does not
 substitute cached worker claims for that fresh verification.

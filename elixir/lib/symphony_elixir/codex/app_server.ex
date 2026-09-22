@@ -35,7 +35,7 @@ defmodule SymphonyElixir.Codex.AppServer do
 
   @spec run(Path.t(), String.t(), map(), keyword()) :: {:ok, map()} | {:error, term()}
   def run(workspace, prompt, issue, opts \\ []) do
-    with {:ok, session} <- start_session(workspace, opts) do
+    with {:ok, session} <- start_session(workspace, Keyword.put(opts, :issue, issue)) do
       try do
         run_turn(session, prompt, issue, opts)
       after
@@ -49,7 +49,7 @@ defmodule SymphonyElixir.Codex.AppServer do
     worker_host = Keyword.get(opts, :worker_host)
 
     with {:ok, expanded_workspace} <- validate_workspace_cwd(workspace, worker_host) do
-      dynamic_tool_binding = DynamicTool.bind(expanded_workspace)
+      dynamic_tool_binding = DynamicTool.bind(expanded_workspace, Keyword.get(opts, :issue))
 
       start_bound_session(expanded_workspace, worker_host, dynamic_tool_binding)
     end

@@ -155,6 +155,9 @@ defmodule SymphonyElixir.ReviewToolTest do
     assert call(c, "linear_attach_pr", %{url: "https://github.com/driver-ai/runtime/pull/5"})["success"]
 
     for url <- [
+          "https://github.com",
+          "https://github.com/",
+          "https://github.com:bad/driver-ai/runtime/pull/5",
           "https://github.com/other/repo/pull/5",
           "https://evil.test/driver-ai/runtime/pull/5",
           "http://github.com/driver-ai/runtime/pull/5",
@@ -164,6 +167,43 @@ defmodule SymphonyElixir.ReviewToolTest do
         ] do
       refute call(c, "linear_attach_pr", %{url: url})["success"]
     end
+  end
+
+  test "a missing repository still permits reporting and blocking the issue", c do
+    c = %{c | opts: Keyword.put(c.opts, :repository, nil)}
+    assert call(c, "linear_read", %{operation: "issue"})["success"]
+    assert call(c, "linear_comment", %{operation: "create", body: "Repository unavailable"})["success"]
+
+    for {tool, args} <- [
+          {"symphony_review", %{operation: "start"}},
+          {"linear_attach_pr", %{url: "https://github.com/driver-ai/runtime/pull/5"}},
+          {"linear_transition", %{state_id: "state-1"}}
+        ] do
+      response = call(c, tool, args)
+      refute response["success"]
+      assert response["output"] =~ "review_repository_not_captured"
+    end
+
+    Agent.update(c.api, &put_in(&1.state["name"], "Blocked"))
+    assert call(c, "linear_transition", %{state_id: "state-1"})["success"]
+    assert ReviewRunnerFixture.calls(c.review.state_root) == []
+  end
+
+  test "a rejected repository binding cannot start or hand off even with a plausible remote", c do
+    c = %{c | opts: Keyword.put(c.opts, :review_repository_error, :review_repository_mismatch)}
+
+    for {tool, args} <- [
+          {"symphony_review", %{operation: "start"}},
+          {"linear_attach_pr", %{url: "https://github.com/driver-ai/runtime/pull/5"}},
+          {"linear_transition", %{state_id: "state-1"}}
+        ] do
+      response = call(c, tool, args)
+      refute response["success"]
+      assert response["output"] =~ "review_repository_mismatch"
+    end
+
+    assert transition_count(c) == 0
+    assert ReviewRunnerFixture.calls(c.review.state_root) == []
   end
 
   test "provider failures and absent authoritative issues fail without exposing raw errors", c do
