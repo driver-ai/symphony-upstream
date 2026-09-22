@@ -47,27 +47,28 @@ defmodule SymphonyElixir.ReviewOperation do
         {:reply, {:ok, accepted_result(active.request_id, issue_id, known_run_id)}, state}
 
       _ ->
-        owner = self()
+        launch_review(operation, run_id, context, review, from, issue_id, state)
+    end
+  end
 
-        with {:ok, request} <- build_request(operation, run_id, context, review),
-             {:ok, request_path} <- write_request(request, review.state_root),
-             {:ok, pid} <-
-               Task.start(fn -> launch_runner(owner, review.executable, request_path, request) end) do
-          monitor = Process.monitor(pid)
+  defp launch_review(operation, run_id, context, review, from, issue_id, state) do
+    owner = self()
 
-          active = %{
-            pid: pid,
-            monitor: monitor,
-            from: from,
-            request_id: request["request_id"],
-            issue_id: issue_id,
-            run_id: run_id
-          }
+    with {:ok, request} <- build_request(operation, run_id, context, review),
+         {:ok, request_path} <- write_request(request, review.state_root),
+         {:ok, pid} <- Task.start(fn -> launch_runner(owner, review.executable, request_path, request) end) do
+      active = %{
+        pid: pid,
+        monitor: Process.monitor(pid),
+        from: from,
+        request_id: request["request_id"],
+        issue_id: issue_id,
+        run_id: run_id
+      }
 
-          {:noreply, Map.put(state, issue_id, active)}
-        else
-          {:error, reason} -> {:reply, {:error, reason}, state}
-        end
+      {:noreply, Map.put(state, issue_id, active)}
+    else
+      {:error, reason} -> {:reply, {:error, reason}, state}
     end
   end
 

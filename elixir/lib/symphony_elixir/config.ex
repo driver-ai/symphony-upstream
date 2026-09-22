@@ -116,9 +116,8 @@ defmodule SymphonyElixir.Config do
   @doc false
   @spec validate_settings(Schema.t()) :: :ok | {:error, term()}
   def validate_settings(settings) do
-    with :ok <- validate_tracker(settings),
-         :ok <- validate_review(settings) do
-      :ok
+    with :ok <- validate_tracker(settings) do
+      validate_review(settings)
     end
   end
 
@@ -138,26 +137,32 @@ defmodule SymphonyElixir.Config do
       settings.worker.ssh_hosts != [] ->
         {:error, :review_does_not_support_remote_workers}
 
-      not File.regular?(review.executable) ->
-        {:error, {:invalid_review_executable, review.executable}}
-
-      not executable?(review.executable) ->
-        {:error, {:review_executable_not_executable, review.executable}}
-
-      writable_path_overlap?(review.executable, settings) ->
-        {:error, {:review_executable_worker_writable, review.executable}}
-
-      not File.dir?(review.state_root) ->
-        {:error, {:invalid_review_state_root, review.state_root}}
-
-      not private_directory?(review.state_root) ->
-        {:error, {:review_state_root_not_private, review.state_root}}
-
-      writable_path_overlap?(review.state_root, settings) ->
-        {:error, {:review_state_root_worker_writable, review.state_root}}
-
       true ->
-        :ok
+        validate_review_paths(review, settings)
+    end
+  end
+
+  defp validate_review_paths(review, settings) do
+    with :ok <- validate_review_executable(review.executable, settings) do
+      validate_review_state_root(review.state_root, settings)
+    end
+  end
+
+  defp validate_review_executable(path, settings) do
+    cond do
+      not File.regular?(path) -> {:error, {:invalid_review_executable, path}}
+      not executable?(path) -> {:error, {:review_executable_not_executable, path}}
+      writable_path_overlap?(path, settings) -> {:error, {:review_executable_worker_writable, path}}
+      true -> :ok
+    end
+  end
+
+  defp validate_review_state_root(path, settings) do
+    cond do
+      not File.dir?(path) -> {:error, {:invalid_review_state_root, path}}
+      not private_directory?(path) -> {:error, {:review_state_root_not_private, path}}
+      writable_path_overlap?(path, settings) -> {:error, {:review_state_root_worker_writable, path}}
+      true -> :ok
     end
   end
 

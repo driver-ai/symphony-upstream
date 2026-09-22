@@ -10,7 +10,9 @@ defmodule SymphonyElixir.Linear.AgentTool do
 
   @spec execute(String.t() | nil, term(), keyword()) :: map()
   def execute(tool, arguments, opts) do
-    if review_enabled?(opts), do: execute_review_tool(tool, arguments, opts), else: execute_legacy_tool(tool, arguments, opts)
+    if review_enabled?(opts),
+      do: execute_review_tool(tool, arguments, opts),
+      else: execute_legacy_tool(tool, arguments, opts)
   end
 
   @spec tool_specs() :: [map()]
@@ -45,7 +47,7 @@ defmodule SymphonyElixir.Linear.AgentTool do
       spec(
         "linear_comment",
         "Create, update, or reply on the active issue.",
-        %{"operation" => enum_schema(~w(create update reply)), "body" => string_schema(), "comment_id" => nullable_string_schema(), "parent_id" => nullable_string_schema()},
+        comment_properties(),
         ["operation", "body"]
       ),
       spec("linear_attach_pr", "Attach a GitHub PR from the bound repository.", %{"url" => string_schema(), "title" => nullable_string_schema()}, ["url"]),
@@ -60,6 +62,16 @@ defmodule SymphonyElixir.Linear.AgentTool do
   defp string_schema, do: %{"type" => "string", "minLength" => 1}
   defp nullable_string_schema, do: %{"type" => ["string", "null"]}
   defp enum_schema(values), do: %{"type" => "string", "enum" => values}
+
+  defp comment_properties do
+    %{
+      "operation" => enum_schema(~w(create update reply)),
+      "body" => string_schema(),
+      "comment_id" => nullable_string_schema(),
+      "parent_id" => nullable_string_schema()
+    }
+  end
+
   defp review_enabled?(opts), do: match?(%{enabled: true}, Keyword.get(opts, :review))
 
   defp execute_review_tool(@raw_tool, _arguments, _opts), do: failure("`linear_graphql` is disabled for review-enabled sessions; use typed Linear tools.")
@@ -80,9 +92,8 @@ defmodule SymphonyElixir.Linear.AgentTool do
     run_id = args["run_id"]
 
     with true <- operation in ~w(start status resume cancel) or {:error, :invalid_review_operation},
-         {:ok, issue} <- fetch_authoritative_issue(opts),
-         {:ok, result} <- review_module(opts).execute(operation, run_id, review_context(issue, opts), Keyword.fetch!(opts, :review)) do
-      {:ok, result}
+         {:ok, issue} <- fetch_authoritative_issue(opts) do
+      review_module(opts).execute(operation, run_id, review_context(issue, opts), Keyword.fetch!(opts, :review))
     end
   end
 
@@ -116,9 +127,8 @@ defmodule SymphonyElixir.Linear.AgentTool do
   defp dispatch_typed("linear_transition", args, opts) do
     with {:ok, response} <- graphql(states_query(), %{id: bound_issue_id(opts)}, opts),
          {:ok, state} <- find_state(response, args["state_id"]),
-         :ok <- maybe_verify_handoff(state, opts),
-         {:ok, result} <- graphql(transition_mutation(), %{id: bound_issue_id(opts), stateId: args["state_id"]}, opts) do
-      {:ok, result}
+         :ok <- maybe_verify_handoff(state, opts) do
+      graphql(transition_mutation(), %{id: bound_issue_id(opts), stateId: args["state_id"]}, opts)
     end
   end
 
