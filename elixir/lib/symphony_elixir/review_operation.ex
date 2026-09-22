@@ -172,6 +172,7 @@ defmodule SymphonyElixir.ReviewOperation do
           line: 65_536
         ]
       )
+
     consume_port(port, request, owner, "", 0)
   end
 

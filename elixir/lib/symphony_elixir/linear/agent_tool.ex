@@ -18,17 +18,34 @@ defmodule SymphonyElixir.Linear.AgentTool do
   def tool_specs(%{enabled: true}), do: typed_tool_specs()
 
   def tool_specs(_) do
-    [spec(@raw_tool, "Execute a raw GraphQL operation against Linear.", %{
-      "query" => string_schema(),
-      "variables" => %{"type" => ["object", "null"], "additionalProperties" => true}
-    }, ["query"])]
+    [
+      spec(
+        @raw_tool,
+        "Execute a raw GraphQL operation against Linear.",
+        %{
+          "query" => string_schema(),
+          "variables" => %{"type" => ["object", "null"], "additionalProperties" => true}
+        },
+        ["query"]
+      )
+    ]
   end
 
   defp typed_tool_specs do
     [
       spec("symphony_review", "Control the runtime-bound review run.", %{"operation" => enum_schema(~w(start status resume cancel)), "run_id" => nullable_string_schema()}, ["operation"]),
-      spec("linear_read", "Read bounded Linear context.", %{"operation" => enum_schema(~w(issue comments document workflow_states)), "id" => nullable_string_schema(), "cursor" => nullable_string_schema()}, ["operation"]),
-      spec("linear_comment", "Create, update, or reply on the active issue.", %{"operation" => enum_schema(~w(create update reply)), "body" => string_schema(), "comment_id" => nullable_string_schema(), "parent_id" => nullable_string_schema()}, ["operation", "body"]),
+      spec(
+        "linear_read",
+        "Read bounded Linear context.",
+        %{"operation" => enum_schema(~w(issue comments document workflow_states)), "id" => nullable_string_schema(), "cursor" => nullable_string_schema()},
+        ["operation"]
+      ),
+      spec(
+        "linear_comment",
+        "Create, update, or reply on the active issue.",
+        %{"operation" => enum_schema(~w(create update reply)), "body" => string_schema(), "comment_id" => nullable_string_schema(), "parent_id" => nullable_string_schema()},
+        ["operation", "body"]
+      ),
       spec("linear_attach_pr", "Attach a GitHub PR from the bound repository.", %{"url" => string_schema(), "title" => nullable_string_schema()}, ["url"]),
       spec("linear_transition", "Move the active issue to a state from its bound team.", %{"state_id" => string_schema()}, ["state_id"])
     ]
@@ -194,11 +211,12 @@ defmodule SymphonyElixir.Linear.AgentTool do
   defp legacy_client(opts), do: Keyword.get(opts, :linear_client, &Client.graphql/3)
 
   defp legacy_graphql_response(payload) do
-    success = case payload do
-      %{"errors" => [_ | _]} -> false
-      %{errors: [_ | _]} -> false
-      _ -> true
-    end
+    success =
+      case payload do
+        %{"errors" => [_ | _]} -> false
+        %{errors: [_ | _]} -> false
+        _ -> true
+      end
 
     response(success, payload)
   end
@@ -216,6 +234,7 @@ defmodule SymphonyElixir.Linear.AgentTool do
   defp normalize_raw_arguments(arguments) when is_map(arguments) do
     query = arguments["query"] || arguments[:query]
     variables = arguments["variables"] || arguments[:variables] || %{}
+
     cond do
       not is_binary(query) or String.trim(query) == "" -> {:error, :missing_query}
       not is_map(variables) -> {:error, :invalid_variables}
@@ -226,13 +245,15 @@ defmodule SymphonyElixir.Linear.AgentTool do
   defp normalize_raw_arguments(_arguments), do: {:error, :invalid_arguments}
 
   defp reject_extra_fields(tool, arguments) do
-    allowed = case tool do
-      "symphony_review" -> ~w(operation run_id)
-      "linear_read" -> ~w(operation id cursor)
-      "linear_comment" -> ~w(operation body comment_id parent_id)
-      "linear_attach_pr" -> ~w(url title)
-      "linear_transition" -> ~w(state_id)
-    end
+    allowed =
+      case tool do
+        "symphony_review" -> ~w(operation run_id)
+        "linear_read" -> ~w(operation id cursor)
+        "linear_comment" -> ~w(operation body comment_id parent_id)
+        "linear_attach_pr" -> ~w(url title)
+        "linear_transition" -> ~w(state_id)
+      end
+
     if Enum.all?(Map.keys(arguments), &(&1 in allowed)), do: :ok, else: {:error, :unexpected_tool_argument}
   end
 
@@ -274,6 +295,7 @@ defmodule SymphonyElixir.Linear.AgentTool do
 
   defp success(payload), do: response(true, payload)
   defp failure(message, supported \\ @typed_tools), do: response(false, %{"error" => %{"message" => message, "supportedTools" => supported}})
+
   defp response(success, payload) do
     output = if is_map(payload) or is_list(payload), do: Jason.encode!(payload, pretty: true), else: inspect(payload)
     %{"success" => success, "output" => output, "contentItems" => [%{"type" => "inputText", "text" => output}]}
@@ -284,14 +306,26 @@ defmodule SymphonyElixir.Linear.AgentTool do
   defp format_error(:invalid_arguments), do: "`linear_graphql` expects a query string or an object with `query` and optional `variables`."
   defp format_error(reason), do: "Tool execution rejected: #{inspect(reason)}"
 
-  defp issue_query, do: "query SymphonyBoundIssue($id: String!) { issue(id: $id) { id identifier title description state { id name type } project { id name slugId url } attachments { nodes { id title url sourceType } } relations { nodes { id type relatedIssue { id identifier title state { name } } } } } }"
-  defp comments_query, do: "query SymphonyBoundComments($id: String!, $after: String) { issue(id: $id) { id comments(first: 50, after: $after) { nodes { id body createdAt updatedAt parent { id } user { id name } } pageInfo { hasNextPage endCursor } } } }"
+  defp issue_query,
+    do:
+      "query SymphonyBoundIssue($id: String!) { issue(id: $id) { id identifier title description state { id name type } project { id name slugId url } attachments { nodes { id title url sourceType } } relations { nodes { id type relatedIssue { id identifier title state { name } } } } } }"
+
+  defp comments_query,
+    do:
+      "query SymphonyBoundComments($id: String!, $after: String) { issue(id: $id) { id comments(first: 50, after: $after) { nodes { id body createdAt updatedAt parent { id } user { id name } } pageInfo { hasNextPage endCursor } } } }"
+
   defp document_query, do: "query SymphonyLinkedDocument($id: String!) { document(id: $id) { id title content url updatedAt } }"
   defp states_query, do: "query SymphonyBoundStates($id: String!) { issue(id: $id) { id team { id states { nodes { id name type } } } } }"
   defp comment_membership_query, do: "query SymphonyBoundComment($id: String!) { viewer { id } comment(id: $id) { id issue { id } user { id } } }"
   defp comment_create_mutation, do: "mutation SymphonyCreateComment($issueId: String!, $body: String!) { commentCreate(input: {issueId: $issueId, body: $body}) { success comment { id url } } }"
-  defp comment_reply_mutation, do: "mutation SymphonyReplyComment($issueId: String!, $parentId: String!, $body: String!) { commentCreate(input: {issueId: $issueId, parentId: $parentId, body: $body}) { success comment { id url } } }"
+  defp comment_reply_mutation,
+    do:
+      "mutation SymphonyReplyComment($issueId: String!, $parentId: String!, $body: String!) { commentCreate(input: {issueId: $issueId, parentId: $parentId, body: $body}) { success comment { id url } } }"
+
   defp comment_update_mutation, do: "mutation SymphonyUpdateComment($id: String!, $body: String!) { commentUpdate(id: $id, input: {body: $body}) { success comment { id url } } }"
-  defp attach_pr_mutation, do: "mutation SymphonyAttachPR($issueId: String!, $url: String!, $title: String) { attachmentLinkGitHubPR(issueId: $issueId, url: $url, title: $title, linkKind: links) { success attachment { id url title } } }"
+  defp attach_pr_mutation,
+    do:
+      "mutation SymphonyAttachPR($issueId: String!, $url: String!, $title: String) { attachmentLinkGitHubPR(issueId: $issueId, url: $url, title: $title, linkKind: links) { success attachment { id url title } } }"
+
   defp transition_mutation, do: "mutation SymphonyTransition($id: String!, $stateId: String!) { issueUpdate(id: $id, input: {stateId: $stateId}) { success issue { id state { id name type } } } }"
 end
