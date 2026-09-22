@@ -31,6 +31,10 @@ Check out [elixir/README.md](elixir/README.md) for instructions on how to set up
 and run the Elixir-based Symphony implementation. You can also ask your favorite coding agent to
 help with the setup:
 
+The reference runtime also supports an opt-in installed review-runner gate for local Linear
+workflows; its versioned contract is documented in
+[elixir/docs/review-runner.md](elixir/docs/review-runner.md).
+
 > Set up Symphony for my repository based on
 > https://github.com/openai/symphony/blob/main/elixir/README.md
 

@@ -40,6 +40,9 @@ defmodule SymphonyElixir.Linear.Adapter do
   @spec agent_tool_specs() :: [map()]
   def agent_tool_specs, do: AgentTool.tool_specs()
 
+  @spec agent_tool_specs(map()) :: [map()]
+  def agent_tool_specs(review), do: AgentTool.tool_specs(review)
+
   @spec execute_agent_tool(String.t(), term(), keyword()) :: map()
   def execute_agent_tool(tool, arguments, opts) do
     AgentTool.execute(tool, arguments, opts)

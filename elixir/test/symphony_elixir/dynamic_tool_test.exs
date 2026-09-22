@@ -23,6 +23,17 @@ defmodule SymphonyElixir.Codex.DynamicToolTest do
     assert description =~ "Linear"
   end
 
+  test "review-enabled sessions advertise only typed tools and reject raw GraphQL" do
+    review = %{enabled: true}
+
+    assert Enum.map(DynamicTool.tool_specs(review), & &1["name"]) ==
+             ~w(symphony_review linear_read linear_comment linear_attach_pr linear_transition)
+
+    response = DynamicTool.execute("linear_graphql", %{"query" => "mutation Bypass { issueUpdate }"}, review: review)
+    refute response["success"]
+    assert Jason.decode!(response["output"])["error"]["message"] =~ "disabled"
+  end
+
   test "unsupported tools return a failure payload with the supported tool list" do
     response = DynamicTool.execute("not_a_real_tool", %{}, [])
 

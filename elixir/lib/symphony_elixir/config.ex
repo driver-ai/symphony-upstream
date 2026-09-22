@@ -3,7 +3,7 @@ defmodule SymphonyElixir.Config do
   Runtime configuration loaded from `WORKFLOW.md`.
   """
 
-  alias SymphonyElixir.{Config.Schema, Tracker}
+  alias SymphonyElixir.{Config.Schema, PathSafety, Tracker}
   alias SymphonyElixir.{Workflow, WorkflowStore}
 
   @default_prompt_template """
@@ -116,12 +116,114 @@ defmodule SymphonyElixir.Config do
   @doc false
   @spec validate_settings(Schema.t()) :: :ok | {:error, term()}
   def validate_settings(settings) do
-    if is_nil(settings.tracker.kind) do
-      {:error, :missing_tracker_kind}
-    else
-      Tracker.validate_config(settings.tracker)
+    with :ok <- validate_tracker(settings) do
+      validate_review(settings)
     end
   end
+
+  defp validate_tracker(settings) do
+    if is_nil(settings.tracker.kind), do: {:error, :missing_tracker_kind}, else: Tracker.validate_config(settings.tracker)
+  end
+
+  defp validate_review(%{review: %{enabled: false}}), do: :ok
+
+  defp validate_review(settings) do
+    review = settings.review
+
+    cond do
+      settings.tracker.kind != "linear" ->
+        {:error, :review_requires_linear_tracker}
+
+      settings.worker.ssh_hosts != [] ->
+        {:error, :review_does_not_support_remote_workers}
+
+      settings.codex.thread_sandbox != "workspace-write" or not bounded_turn_policy?(settings.codex.turn_sandbox_policy) ->
+        {:error, :review_requires_workspace_write_sandbox}
+
+      true ->
+        validate_review_paths(review, settings)
+    end
+  end
+
+  defp bounded_turn_policy?(nil), do: true
+
+  defp bounded_turn_policy?(%{"type" => "workspaceWrite"} = policy) do
+    roots = Map.get(policy, "writableRoots", [])
+    is_list(roots) and Enum.all?(roots, &(is_binary(&1) and Path.type(&1) == :absolute))
+  end
+
+  defp bounded_turn_policy?(_policy), do: false
+
+  defp validate_review_paths(review, settings) do
+    with :ok <- validate_review_executable(review.executable, settings) do
+      validate_review_state_root(review.state_root, settings)
+    end
+  end
+
+  defp validate_review_executable(path, settings) do
+    case File.stat(path) do
+      {:ok, %File.Stat{type: :regular, mode: mode}} ->
+        cond do
+          Bitwise.band(mode, 0o111) == 0 -> {:error, {:review_executable_not_executable, path}}
+          writable_path_overlap?(path, settings) -> {:error, {:review_executable_worker_writable, path}}
+          true -> :ok
+        end
+
+      _ ->
+        {:error, {:invalid_review_executable, path}}
+    end
+  end
+
+  defp validate_review_state_root(path, settings) do
+    case File.stat(path) do
+      {:ok, %File.Stat{type: :directory, mode: mode}} ->
+        cond do
+          Bitwise.band(mode, 0o077) != 0 -> {:error, {:review_state_root_not_private, path}}
+          writable_path_overlap?(path, settings) -> {:error, {:review_state_root_worker_writable, path}}
+          true -> :ok
+        end
+
+      _ ->
+        {:error, {:invalid_review_state_root, path}}
+    end
+  end
+
+  defp writable_path_overlap?(state_root, settings) do
+    extra_roots =
+      (settings.codex.turn_sandbox_policy || %{})
+      |> get_in(["writableRoots"])
+      |> List.wrap()
+
+    workflow_dir = Workflow.workflow_file_path() |> Path.expand() |> Path.dirname()
+    workspace_root = Path.expand(settings.workspace.root, workflow_dir)
+    roots = [workspace_root, System.tmp_dir!(), "/tmp"] ++ extra_roots
+
+    canonical_state = canonical_path(state_root)
+
+    Enum.any?(roots, fn root ->
+      canonical_root = canonical_path(root)
+
+      pairs = for writable <- [Path.expand(root), canonical_root], trusted <- [Path.expand(state_root), canonical_state], do: {writable, trusted}
+      Enum.any?(pairs, fn {writable, trusted} -> path_contains?(writable, trusted) or path_contains?(trusted, writable) end)
+    end)
+  end
+
+  defp canonical_path(path) when is_binary(path) do
+    # stat detects symlink cycles before the segment resolver follows them.
+    case File.stat(path) do
+      {:error, :eloop} ->
+        "/"
+
+      _ ->
+        case PathSafety.canonicalize(Path.expand(path)) do
+          {:ok, canonical} -> canonical
+          _ -> "/"
+        end
+    end
+  end
+
+  defp path_contains?("/", _child), do: true
+  defp path_contains?(parent, child), do: child == parent or String.starts_with?(child, parent <> "/")
 
   defp format_config_error(reason) do
     case reason do

@@ -38,6 +38,12 @@ codex:
   turn_sandbox_policy:
     type: workspaceWrite
     networkAccess: true
+# Optional runtime-owned review execution gate. Enabling requires a local Linear worker and
+# installed paths outside every worker-writable root; see docs/review-runner.md.
+review:
+  enabled: false
+  executable: /opt/driver-symphony/review-run.py
+  state_root: /var/lib/driver-symphony/review-runs
 ---
 
 You are working on a Linear ticket `{{ issue.identifier }}`
@@ -73,9 +79,18 @@ Instructions:
 
 Work only in the provided repository copy. Do not touch any other path.
 
-## Prerequisite: Linear MCP or `linear_graphql` tool is available
+## Prerequisite: a Linear tool boundary is available
 
-The agent should be able to talk to Linear, either via a configured Linear MCP server or injected `linear_graphql` tool. If neither is present, treat that as blocked access: record it in the workpad and move the issue according to the workflow instead of asking a user to configure Linear.
+The agent should be able to talk to Linear through either a configured Linear MCP server or the
+runtime's injected tools. Review-disabled sessions expose `linear_graphql`; review-enabled sessions
+expose bounded `linear_read`, `linear_comment`, `linear_attach_pr`, `linear_transition`, and
+`symphony_review` tools. If neither boundary is present, treat that as blocked access.
+
+When review is enabled, instructions below to create another issue or edit issue fields beyond its
+state do not apply: record the proposed follow-up or required operator change in this issue's workpad.
+Use `symphony_review` to start/resume and inspect the installed run. A protected transition can only
+succeed after fresh runner verification; a comment or file claiming review success is insufficient.
+`Blocked` remains available for a real access, review-budget or missing-context blocker.
 
 ## Default posture
 

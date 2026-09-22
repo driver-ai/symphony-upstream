@@ -27,6 +27,10 @@ Linear serves `linear_graphql`, GitHub Issues serves `github_api`, Jira Cloud se
 tools with configured host-side auth and removes declared tracker-token environment variables from
 the Codex child, so the agent does not need a second tracker login.
 
+An opt-in local Linear review gate replaces raw GraphQL with bounded review/read/comment/PR
+attachment/transition tools and verifies installed-runner evidence before handoff. See
+[`docs/review-runner.md`](docs/review-runner.md) for the protocol and trust boundary.
+
 If a claimed issue moves to a terminal state (`Done`, `Closed`, `Cancelled`, or `Duplicate`),
 Symphony stops the active agent for that issue and cleans up matching workspaces.
 
@@ -133,6 +137,11 @@ agent:
   max_turns: 20
 codex:
   command: codex app-server
+# Optional; local Linear workers only. Paths must be installed and outside worker-writable roots.
+review:
+  enabled: false
+  executable: /opt/driver-symphony/review-run.py
+  state_root: /var/lib/driver-symphony/review-runs
 ---
 
 You are working on an issue from the configured tracker {{ issue.identifier }}.
@@ -235,7 +244,7 @@ codex:
 - Dispatchability: the adapter marks an issue dispatchable only when the optional assignee and
   delegate routing filters match and a `Todo` issue has no non-terminal blocker. The generic scheduler then applies
   active/terminal states, required labels, claims, retries, and concurrency.
-- Tool: the Linear adapter advertises `linear_graphql`, accepting either a raw query string or an
+- Tool (review disabled): the Linear adapter advertises `linear_graphql`, accepting either a raw query string or an
   object with nonblank `query` and optional object `variables`. Symphony executes it host-side
   with the session-bound endpoint/token and strips declared token environment variables from the
   Codex child. `project_slug` scopes scheduler reads, not raw tool calls; the tool can access
@@ -256,6 +265,17 @@ codex:
   `tracker_response` (`429` is `tracker_rate_limited`), GraphQL/unknown payload failures to
   `tracker_payload`, and missing cursors to `tracker_pagination`; logs and tool responses carry the
   human-readable provider detail.
+
+With `review.enabled: true`, the Linear adapter instead exposes finite `linear_read`,
+`linear_comment`, `linear_attach_pr`, `linear_transition` and `symphony_review` operations. Raw
+GraphQL is rejected even if called by its old name. Arguments are strictly typed and cannot select
+another issue, replace the authoritative plan or supply completion evidence. The session captures
+its normalized repository before any worker turn. Handoff verifies through the installed runner;
+missing configuration/context, an unbound run, invalid output, stale evidence and provider errors
+return a bounded `success: false` result. Raw provider errors are not returned on this path.
+See [the protocol and lifecycle contract](docs/review-runner.md) for supported reads, transitions,
+receipt evidence and recovery. Review-enabled workers record proposed follow-up issues in their
+workpad because creating issues is intentionally outside this tool boundary.
 
 ### GitHub Issues adapter
 

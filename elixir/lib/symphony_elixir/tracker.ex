@@ -7,8 +7,9 @@ defmodule SymphonyElixir.Tracker do
   leak into scheduler policy.
   """
 
-  alias SymphonyElixir.Config
+  alias SymphonyElixir.{Config, ReviewOperation}
   alias SymphonyElixir.Tracker.Issue
+  require Logger
 
   @adapters %{
     "asana" => SymphonyElixir.Asana.Adapter,
@@ -22,11 +23,13 @@ defmodule SymphonyElixir.Tracker do
   @callback fetch_issues_by_states([String.t()]) :: {:ok, [Issue.t()]} | {:error, term()}
   @callback fetch_issues_by_ids([String.t()]) :: {:ok, [Issue.t()]} | {:error, term()}
   @callback agent_tool_specs() :: [map()]
+  @callback agent_tool_specs(map()) :: [map()]
   @callback execute_agent_tool(String.t(), term(), keyword()) :: map()
   @callback secret_environment_names(map()) :: [String.t()]
   @callback validate_config(map()) :: :ok | {:error, term()}
 
   @optional_callbacks agent_tool_specs: 0,
+                      agent_tool_specs: 1,
                       execute_agent_tool: 3,
                       validate_config: 1
 
@@ -45,22 +48,27 @@ defmodule SymphonyElixir.Tracker do
   app-server session so tool advertisement and execution cannot drift across a
   workflow reload.
   """
-  @spec bind_agent_tools() :: map()
-  def bind_agent_tools do
-    tracker_settings = Config.settings!().tracker
+  @spec bind_agent_tools(Path.t() | nil, map() | nil) :: map()
+  def bind_agent_tools(workspace \\ nil, issue \\ nil) do
+    settings = Config.settings!()
+    tracker_settings = settings.tracker
     adapter = adapter_for_settings!(tracker_settings)
+    {repository, repository_error} = bind_review_repository(settings.review, issue, capture_repository(workspace))
 
     %{
       adapter: adapter,
       tracker_settings: tracker_settings,
-      tool_specs: adapter_agent_tool_specs(adapter),
+      review: settings.review,
+      repository: repository,
+      review_repository_error: repository_error,
+      tool_specs: adapter_agent_tool_specs(adapter, settings.review),
       secret_environment_names: adapter_secret_environment_names(adapter, tracker_settings)
     }
   end
 
   @spec execute_bound_agent_tool(map(), String.t(), term(), keyword()) :: map()
   def execute_bound_agent_tool(
-        %{adapter: adapter, tracker_settings: tracker_settings},
+        %{adapter: adapter, tracker_settings: tracker_settings} = binding,
         tool,
         arguments,
         opts \\ []
@@ -69,7 +77,11 @@ defmodule SymphonyElixir.Tracker do
       adapter,
       tool,
       arguments,
-      Keyword.put(opts, :tracker_settings, tracker_settings)
+      opts
+      |> Keyword.put(:tracker_settings, tracker_settings)
+      |> Keyword.put(:review, binding[:review])
+      |> Keyword.put(:repository, binding[:repository])
+      |> Keyword.put(:review_repository_error, binding[:review_repository_error])
     )
   end
 
@@ -103,11 +115,53 @@ defmodule SymphonyElixir.Tracker do
     adapter
   end
 
-  defp adapter_agent_tool_specs(adapter) do
-    if Code.ensure_loaded?(adapter) and function_exported?(adapter, :agent_tool_specs, 0) do
-      adapter.agent_tool_specs()
-    else
-      []
+  defp adapter_agent_tool_specs(adapter, review) do
+    cond do
+      Code.ensure_loaded?(adapter) and function_exported?(adapter, :agent_tool_specs, 1) ->
+        adapter.agent_tool_specs(review)
+
+      Code.ensure_loaded?(adapter) and function_exported?(adapter, :agent_tool_specs, 0) ->
+        adapter.agent_tool_specs()
+
+      true ->
+        []
+    end
+  end
+
+  defp bind_review_repository(%{enabled: false}, _issue, repository), do: {repository, nil}
+
+  defp bind_review_repository(review, issue, repository) do
+    issue_id = if is_map(issue), do: Map.get(issue, :id)
+
+    case ReviewOperation.bind_repository(issue_id, repository, review) do
+      {:ok, pinned} ->
+        {pinned, nil}
+
+      {:error, reason} ->
+        Logger.warning("Review repository binding rejected issue_id=#{issue_id} reason=#{inspect(reason)}")
+        {nil, reason}
+    end
+  end
+
+  defp capture_repository(nil), do: nil
+
+  defp capture_repository(workspace) do
+    # Deployment hooks clone into repo/; standalone integrations may use the
+    # workspace itself. Never inherit a remote from a parent checkout.
+    Enum.find_value([Path.join(workspace, "repo"), workspace], fn path ->
+      with true <- File.exists?(Path.join(path, ".git")),
+           {remote, 0} <- System.cmd("git", ["-C", path, "config", "--get", "remote.origin.url"], stderr_to_stdout: true) do
+        normalize_repository(remote)
+      else
+        _ -> nil
+      end
+    end)
+  end
+
+  defp normalize_repository(remote) do
+    case Regex.run(~r{^(?:https://github\.com/|git@github\.com:|ssh://git@github\.com/)([^/\s]+/[^/\s]+?)(?:\.git)?/?$}, String.trim(remote)) do
+      [_, repository] -> String.downcase(repository)
+      _ -> nil
     end
   end
 
