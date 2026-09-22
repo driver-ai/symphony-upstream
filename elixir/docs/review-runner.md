@@ -45,7 +45,7 @@ Every request is a JSON object:
   },
   "execution": {
     "workspace": "/srv/symphony/workspaces/SYM-100",
-    "repository": "https://github.com/acme/runtime",
+    "repository": "acme/runtime",
     "thread_id": "thread-1",
     "session_id": "thread-1"
   },
@@ -80,10 +80,12 @@ durability and accounting; runtime restart/reconciliation asks the runner rather
 replaying work. Cancellation retains records, and failed control calls never imply that a paid run
 ended.
 
-Immediately before `In Review`, `Merging`, or `Done`, Symphony refetches the issue and calls
-`verify`. It performs the Linear mutation only after a matching `complete` result with all evidence
-fields and a successful runner exit. Comments, workspace files, prior accepted events, cached
-completion, and exit status alone cannot authorize handoff.
+Immediately before a transition out of one of the workflow's configured active states, Symphony
+refetches the issue and calls `verify`. The destination is resolved from the bound issue's team, so
+renaming a review or completion state does not bypass the gate. It performs the Linear mutation only
+after a matching `complete` result with all evidence fields and a successful runner exit. Comments,
+workspace files, prior accepted events, cached completion, and exit status alone cannot authorize
+handoff.
 
 ## Review-enabled Linear tools
 
