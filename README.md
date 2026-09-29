@@ -32,7 +32,8 @@ and run the Elixir-based Symphony implementation. You can also ask your favorite
 help with the setup:
 
 The reference runtime also supports an opt-in installed review-runner gate for local Linear
-workflows; its versioned contract is documented in
+workflows, including explicit per-role retry with durable recovery of the same decision after restart.
+Its versioned contract is documented in
 [elixir/docs/review-runner.md](elixir/docs/review-runner.md).
 
 > Set up Symphony for my repository based on

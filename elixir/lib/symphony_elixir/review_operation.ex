@@ -8,9 +8,9 @@ defmodule SymphonyElixir.ReviewOperation do
   use GenServer
   require Logger
 
-  @operations ~w(start resume status cancel verify)
-  @launch_operations ~w(start resume)
-  @fresh_start_statuses ~w(unstarted complete canceled)
+  @operations ~w(start resume status cancel verify retry)
+  @launch_operations ~w(start resume retry)
+  @fresh_start_statuses ~w(unstarted complete incomplete canceled)
   @max_event_bytes 65_536
   @control_timeout_ms 5_000
 
@@ -28,12 +28,39 @@ defmodule SymphonyElixir.ReviewOperation do
 
   @spec execute(String.t(), String.t() | nil, context(), map(), keyword()) :: {:ok, map()} | {:error, term()}
   def execute(operation, run_id, context, review, opts \\ []) when operation in @operations do
-    timeout = if operation in @launch_operations, do: :infinity, else: Keyword.get(opts, :control_timeout_ms, @control_timeout_ms)
-    GenServer.call(Keyword.get(opts, :server, __MODULE__), {:execute, operation, run_id, context, review}, timeout)
+    retry = Keyword.get(opts, :retry)
+
+    with :ok <- validate_retry(operation, run_id, retry) do
+      retry = if retry, do: %{retry | "attempts" => Enum.sort_by(retry["attempts"], & &1["role"]), "reason" => String.trim(retry["reason"])}
+      timeout = if operation in @launch_operations, do: :infinity, else: Keyword.get(opts, :control_timeout_ms, @control_timeout_ms)
+      GenServer.call(Keyword.get(opts, :server, __MODULE__), {:execute, operation, run_id, context, review, retry}, timeout)
+    end
   catch
     :exit, {:timeout, _call} -> {:error, :review_control_timeout}
     :exit, _reason -> {:error, :review_owner_unavailable}
   end
+
+  @spec validate_retry(String.t(), String.t() | nil, term()) :: :ok | {:error, :invalid_review_retry}
+  def validate_retry("retry", run_id, %{"attempts" => attempts, "reason" => reason} = retry)
+      when is_binary(run_id) and run_id != "" and is_list(attempts) and is_binary(reason) do
+    valid =
+      map_size(retry) == 2 and String.trim(reason) != "" and String.length(reason) <= 4096 and valid_retry_attempts?(attempts)
+
+    if valid, do: :ok, else: {:error, :invalid_review_retry}
+  end
+
+  def validate_retry(operation, _run_id, nil) when operation != "retry", do: :ok
+  def validate_retry(_operation, _run_id, _retry), do: {:error, :invalid_review_retry}
+
+  defp valid_retry_attempts?(attempts) do
+    length(attempts) in 1..6 and Enum.all?(attempts, &valid_retry_attempt?/1) and
+      length(Enum.uniq_by(attempts, & &1["role"])) == length(attempts)
+  end
+
+  defp valid_retry_attempt?(%{"role" => role, "id" => id} = attempt) when is_binary(id),
+    do: map_size(attempt) == 2 and role in ~w(general correctness security conventions design tests) and Regex.match?(~r/\A[a-f0-9]{32}\z/, id)
+
+  defp valid_retry_attempt?(_attempt), do: false
 
   @spec bind_repository(String.t() | nil, String.t() | nil, map(), keyword()) :: {:ok, String.t()} | {:error, term()}
   def bind_repository(issue_id, repository, review, opts \\ []) do
@@ -75,18 +102,26 @@ defmodule SymphonyElixir.ReviewOperation do
     {:reply, result, state}
   end
 
-  def handle_call({:execute, operation, run_id, context, review}, from, state) do
+  def handle_call({:execute, operation, run_id, context, review, retry}, from, state) do
     issue_id = context.issue["id"]
     active = Map.get(state.tasks, state.runs[issue_id])
+    cancel_pending? = Enum.any?(state.tasks, fn {_ref, task} -> task.context.issue["id"] == issue_id and task.request["operation"] == "cancel" end)
 
     with {:ok, binding} <- read_binding(review.state_root, issue_id),
-         :ok <- validate_binding(binding, run_id, context.repository) do
-      if operation in @launch_operations and active do
-        coalesce_bound(active, context, review, from, state)
-      else
-        start_operation(operation, binding, context, review, from, state)
+         :ok <- validate_binding(binding, run_id, context.repository),
+         false <- operation == "retry" and cancel_pending? do
+      cond do
+        (operation == "retry" and active) && active.request["retry"] != retry ->
+          {:reply, {:error, :review_operation_active}, state}
+
+        operation in @launch_operations and active ->
+          coalesce_bound(active, context, review, from, state)
+
+        true ->
+          start_operation(operation, binding, context, review, retry, from, state)
       end
     else
+      true -> {:reply, {:error, :review_cancel_pending}, state}
       {:error, reason} -> {:reply, {:error, reason}, state}
     end
   end
@@ -102,8 +137,8 @@ defmodule SymphonyElixir.ReviewOperation do
   defp coalesce(active, from, state),
     do: {:noreply, put_in(state.tasks[active.task.ref].froms, [from | active.froms])}
 
-  defp start_operation(operation, binding, context, review, from, state) do
-    with {:ok, request} <- build_request(operation, binding, context, review),
+  defp start_operation(operation, binding, context, review, retry, from, state) do
+    with {:ok, request} <- build_request(operation, binding, context, review, retry),
          :ok <- persist_launch(request, review.state_root) do
       owner = self()
       path = Path.join([review.state_root, "requests", Ecto.UUID.generate() <> ".json"])
@@ -245,14 +280,17 @@ defmodule SymphonyElixir.ReviewOperation do
     end
   end
 
-  defp build_request(operation, binding, context, review) do
-    with {:ok, operation, request_id, run_id} <- request_identity(operation, binding) do
+  defp build_request(operation, binding, context, review, retry) do
+    with {:ok, resolved_operation, request_id, run_id} <- request_identity(operation, binding),
+         effective_retry = if(resolved_operation == "retry", do: retry || binding["retry"]),
+         :ok <- validate_retry(resolved_operation, run_id, effective_retry) do
       {:ok,
        %{
          "protocol_version" => 1,
          "request_id" => request_id,
-         "operation" => operation,
+         "operation" => resolved_operation,
          "run_id" => run_id,
+         "retry" => effective_retry,
          "issue" => context.issue,
          "execution" => Map.take(context, [:workspace, :repository, :thread_id, :session_id]),
          "state_root" => review.state_root
@@ -265,7 +303,13 @@ defmodule SymphonyElixir.ReviewOperation do
   defp request_identity(operation, nil) when operation != "start", do: {:error, :review_run_missing}
   defp request_identity(_operation, %{"request_id" => nil}), do: {:error, :review_run_missing}
 
-  defp request_identity(operation, binding) when operation in @launch_operations,
+  defp request_identity("retry", %{"run_id" => run_id}) when is_binary(run_id),
+    do: {:ok, "retry", Ecto.UUID.generate(), run_id}
+
+  defp request_identity(operation, %{"retry" => retry} = binding) when operation in ~w(start resume) and is_map(retry),
+    do: {:ok, "retry", binding["request_id"], binding["run_id"]}
+
+  defp request_identity(operation, binding) when operation in ~w(start resume),
     do: {:ok, "resume", binding["request_id"], binding["run_id"]}
 
   defp request_identity(operation, %{"run_id" => run_id}) when is_binary(run_id),
@@ -298,16 +342,16 @@ defmodule SymphonyElixir.ReviewOperation do
   end
 
   defp persist_launch(%{"operation" => operation} = request, root) when operation in @launch_operations,
-    do: write_binding(root, request["issue"]["id"], request["request_id"], request["run_id"], request["execution"].repository, "unknown")
+    do: write_binding(root, request["issue"]["id"], request["request_id"], request["run_id"], request["execution"].repository, "unknown", request["retry"])
 
   defp persist_launch(_request, _root), do: :ok
 
   defp persist_binding(active, run_id, status),
-    do: write_binding(active.review.state_root, active.context.issue["id"], active.request["request_id"], run_id, active.context.repository, status)
+    do: write_binding(active.review.state_root, active.context.issue["id"], active.request["request_id"], run_id, active.context.repository, status, active.request["retry"])
 
-  defp write_binding(root, issue_id, request_id, run_id, repository, status) do
+  defp write_binding(root, issue_id, request_id, run_id, repository, status, retry \\ nil) do
     path = binding_path(root, issue_id)
-    atomic_write(path, Jason.encode!(%{request_id: request_id, run_id: run_id, repository: repository, status: status}))
+    atomic_write(path, Jason.encode!(%{request_id: request_id, run_id: run_id, repository: repository, status: status, retry: retry}))
   end
 
   defp binding_path(root, issue_id),

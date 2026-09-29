@@ -48,6 +48,35 @@ defmodule SymphonyElixir.ReviewToolTest do
     assert verify["execution"] == %{"workspace" => c.review.workspace, "repository" => "driver-ai/runtime", "thread_id" => "thread-1", "session_id" => "session-1"}
   end
 
+  test "retry validates the exact attempt selection before external calls and forwards the decision", c do
+    retry = %{"attempts" => [%{"role" => "general", "id" => String.duplicate("a", 32)}], "reason" => "The prerequisite is available."}
+
+    for args <- [
+          %{operation: "retry"},
+          %{operation: "retry", run_id: "run-1"},
+          %{operation: "retry", run_id: "run-1", retry: %{}},
+          %{operation: "retry", run_id: "run-1", retry: %{retry | "attempts" => []}},
+          %{operation: "retry", run_id: "run-1", retry: %{retry | "attempts" => [nil]}},
+          %{operation: "retry", run_id: "run-1", retry: %{retry | "attempts" => retry["attempts"] ++ retry["attempts"]}},
+          %{operation: "retry", run_id: "run-1", retry: %{retry | "attempts" => [%{"role" => "unknown", "id" => "short"}]}},
+          %{operation: "retry", run_id: "run-1", retry: %{retry | "reason" => " "}},
+          %{operation: "retry", run_id: "run-1", retry: Map.put(retry, "budget", 100)},
+          %{operation: "resume", retry: retry}
+        ] do
+      refute call(c, "symphony_review", args)["success"]
+    end
+
+    assert Agent.get(c.api, & &1.calls) == []
+    assert ReviewRunnerFixture.calls(c.review.state_root) == []
+    assert call(c, "symphony_review", %{operation: "start"})["success"]
+    assert call(c, "symphony_review", %{operation: "status"})["success"]
+    assert call(c, "symphony_review", %{operation: "retry", run_id: "run-1", retry: retry})["success"]
+    request = List.last(ReviewRunnerFixture.calls(c.review.state_root))
+    assert request["operation"] == "retry"
+    assert request["retry"] == retry
+    assert request["execution"]["session_id"] == c.opts[:session_id]
+  end
+
   test "missing, incomplete, changed-plan and mismatched evidence cannot hand off", c do
     File.write!(Path.join(c.review.workspace, "success.json"), ~s({"status":"complete"}))
     refute call(c, "linear_transition", %{state_id: "state-1"})["success"]
