@@ -277,6 +277,10 @@ See [the protocol and lifecycle contract](docs/review-runner.md) for supported r
 receipt evidence and recovery. Review-enabled workers record proposed follow-up issues in their
 workpad because creating issues is intentionally outside this tool boundary.
 
+`symphony_review` supports explicit retry of named failed attempts with a recorded decision. Its
+durable binding recovers the same retry across owner restarts; installed runner policy owns
+eligibility, retained successful peers, accounting and limits.
+
 ### GitHub Issues adapter
 
 - Config: use `tracker.kind: github` with required `tracker.provider.repo` in `owner/repo` form,

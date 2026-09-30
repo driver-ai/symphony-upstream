@@ -61,6 +61,61 @@ defmodule SymphonyElixir.ReviewOperationTest do
     assert verify["run_id"] == "run-1"
   end
 
+  test "retry survives owner loss before acceptance and coalesces only the same decision", c do
+    ReviewRunnerFixture.configure!(c.review.state_root, %{mode: "incomplete"})
+    assert {:ok, _} = execute(c, "start")
+    await_binding_status(c.review.state_root, "incomplete")
+    retry = %{"attempts" => [%{"role" => "general", "id" => String.duplicate("a", 32)}], "reason" => "The missing prerequisite is available."}
+    ReviewRunnerFixture.configure!(c.review.state_root, %{accept_gate: true})
+    caller = Task.async(fn -> ReviewOperation.execute("retry", "run-1", c.context, c.review, server: c.server, retry: retry) end)
+    ReviewRunnerFixture.await_call(c.review.state_root, 2)
+    stop_supervised!(ReviewOperation)
+    assert {:error, _} = Task.await(caller)
+    start_supervised!({ReviewOperation, name: c.server})
+    ReviewRunnerFixture.configure!(c.review.state_root, %{exit_gate: true})
+    assert {:ok, %{"run_id" => "run-1"}} = execute(c, "resume")
+    [start, first, resumed] = ReviewRunnerFixture.calls(c.review.state_root)
+    assert first["request_id"] != start["request_id"]
+    assert resumed["request_id"] == first["request_id"]
+    assert resumed["operation"] == "retry"
+    assert resumed["retry"] == retry
+    assert {:ok, %{"run_id" => "run-1"}} = ReviewOperation.execute("retry", "run-1", c.context, c.review, server: c.server, retry: retry)
+    changed = %{retry | "reason" => "Another recovery decision."}
+    conflict = ReviewOperation.execute("retry", "run-1", c.context, c.review, server: c.server, retry: changed)
+    assert {:error, :review_operation_active} = conflict
+    assert length(ReviewRunnerFixture.calls(c.review.state_root)) == 3
+    File.write!(Path.join(c.review.state_root, "finish"), "")
+    await_binding_status(c.review.state_root, "complete")
+    assert {:ok, %{"status" => "complete"}} = execute(c, "verify")
+  end
+
+  test "a pending cancel cannot race a retry of the same run", c do
+    ReviewRunnerFixture.configure!(c.review.state_root, %{mode: "incomplete"})
+    assert {:ok, _} = execute(c, "start")
+    await_binding_status(c.review.state_root, "incomplete")
+    ReviewRunnerFixture.configure!(c.review.state_root, %{cancel_gate: true, mode: "canceled"})
+    cancel = Task.async(fn -> execute(c, "cancel") end)
+    ReviewRunnerFixture.await_call(c.review.state_root, 2)
+    retry = %{"attempts" => [%{"role" => "general", "id" => String.duplicate("a", 32)}], "reason" => "Retry after a known failure."}
+    blocked = ReviewOperation.execute("retry", "run-1", c.context, c.review, server: c.server, retry: retry)
+    assert {:error, :review_cancel_pending} = blocked
+    assert length(ReviewRunnerFixture.calls(c.review.state_root)) == 2
+    File.write!(Path.join(c.review.state_root, "cancel"), "")
+    assert {:ok, %{"status" => "canceled"}} = Task.await(cancel)
+  end
+
+  test "explicit start after known incompletion can prepare a new revision without cancellation", c do
+    ReviewRunnerFixture.configure!(c.review.state_root, %{mode: "incomplete"})
+    assert {:ok, _} = execute(c, "start")
+    await_binding_status(c.review.state_root, "incomplete")
+    ReviewRunnerFixture.configure!(c.review.state_root, %{envelope: %{run_id: "run-2"}})
+    assert {:ok, %{"run_id" => "run-2"}} = execute(c, "start")
+    [previous, next] = ReviewRunnerFixture.calls(c.review.state_root)
+    assert next["operation"] == "start"
+    assert next["request_id"] != previous["request_id"]
+    assert next["run_id"] == nil
+  end
+
   test "control result requires matching ordered events and a successful exit", c do
     assert {:ok, _} = execute(c, "start")
 

@@ -91,15 +91,39 @@ Receipt references contain hashes, not credentials.
 Unsupported versions, mismatched envelope identities, malformed output, nonzero exit, missing
 result, unknown status, or incomplete evidence fail closed.
 
-For `start` and `resume`, Symphony returns the accepted run ID while an OTP-owned process continues
+For `start`, `resume` and `retry`, Symphony returns the accepted run ID while an OTP-owned process continues
 consuming the runner. Concurrent starts, including calls before acceptance, share the owned process.
 The runtime persists only request/run/repository identity and last observed execution status before
 launch and after acceptance/result. Runner records own durability, subject/plan deduplication and
 accounting. After restart or an uncertain/incomplete exit, start/resume invokes `resume` with the
 original request ID; a saved ID alone never establishes live ownership. The runner must reconcile
 existing work without replaying paid calls. A subsequent start after a successfully exited complete
-or confirmed canceled run gets a new request ID; the runner still deduplicates the current subject
+or known incomplete/confirmed canceled run gets a new request ID; the runner still deduplicates the current subject
 and plan against its durable records. A failed control never implies a paid process ended.
+
+If the caller disappeared before the runner admitted its first run, resume may finish that original
+admission. This requires the runner to durably bind before every provider claim, check existing
+records for deduplication, and refuse orphaned run records whose accounting ledger is missing.
+
+An explicit retry requires the accepted `run_id` and one bounded decision:
+
+```json
+{"operation":"retry","run_id":"run-...","retry":{"attempts":[{"role":"correctness","id":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}],"reason":"The missing prerequisite is available; finish the remaining review."}}
+```
+
+The selected roles must be unique supported roles, with exact 32-character lowercase hexadecimal
+attempt IDs and a nonempty reason of at most 4,096 characters. Extra fields, missing run IDs and
+retry arguments on another operation are rejected before external calls. The runner checks current
+source/assignment/policy, completed peers, settled usage and installed limits; the runtime supplies
+no allowance or model override. It owns neither retry eligibility nor attempt accounting.
+
+The runtime durably saves the retry selection with its fresh request ID before launching. After
+owner loss, `resume` replays that same logical retry request; the runner must recover its admitted
+attempts without allocating duplicates. Concurrent identical retry decisions coalesce; a different
+decision while an operation is active is rejected. Retry waits for pending cancellation of the same
+run to finish, so a delayed cancel cannot unexpectedly target the replacement attempt. An ordinary
+start after known incompletion lets the runner deduplicate unchanged inputs or admit a new revision
+only after prior work is settled. Old binding records without retry metadata remain readable.
 
 Cancellation releases the local handle only after a matching canceled result and successful process
 exit. Accounting records remain runner-owned and are never deleted by the runtime. Review process

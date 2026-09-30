@@ -90,6 +90,11 @@ When review is enabled, instructions below to create another issue or edit issue
 state do not apply: record the proposed follow-up or required operator change in this issue's workpad.
 Use `symphony_review` to start/resume and inspect the installed run. A protected transition can only
 succeed after fresh runner verification; a comment or file claiming review success is insufficient.
+For a diagnosed failure on unchanged inputs, an explicit `retry` must name the accepted run,
+exact failed attempt IDs and the recovery decision. Inspect the private diagnosis first. Resume
+reconciles the same admitted attempts; retry never resets issue allowance or unknown usage holds.
+Use a new start for changed inputs after known incompletion; the runner decides applicability and
+whether all prior work has settled. No cancel ritual is required for a finished incomplete run.
 `Blocked` remains available for a real access, review-budget or missing-context blocker.
 
 ## Default posture

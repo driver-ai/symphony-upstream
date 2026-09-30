@@ -37,7 +37,12 @@ defmodule SymphonyElixir.Linear.AgentTool do
 
   defp typed_tool_specs do
     [
-      spec("symphony_review", "Control the runtime-bound review run.", %{"operation" => enum_schema(~w(start status resume cancel)), "run_id" => nullable_string_schema()}, ["operation"]),
+      spec(
+        "symphony_review",
+        "Control the runtime-bound review run. Retry names exact failed attempts and a recovery decision; resume never replaces a claimed attempt.",
+        %{"operation" => enum_schema(~w(start status resume cancel retry)), "run_id" => nullable_string_schema(), "retry" => retry_schema()},
+        ["operation"]
+      ),
       spec(
         "linear_read",
         "Read bounded Linear context.",
@@ -62,6 +67,28 @@ defmodule SymphonyElixir.Linear.AgentTool do
   defp string_schema, do: %{"type" => "string", "minLength" => 1}
   defp nullable_string_schema, do: %{"type" => ["string", "null"]}
   defp enum_schema(values), do: %{"type" => "string", "enum" => values}
+
+  defp retry_schema do
+    %{
+      "type" => ["object", "null"],
+      "additionalProperties" => false,
+      "required" => ["attempts", "reason"],
+      "properties" => %{
+        "reason" => %{"type" => "string", "minLength" => 1, "maxLength" => 4096},
+        "attempts" => %{
+          "type" => "array",
+          "minItems" => 1,
+          "maxItems" => 6,
+          "items" => %{
+            "type" => "object",
+            "additionalProperties" => false,
+            "required" => ["role", "id"],
+            "properties" => %{"role" => enum_schema(~w(general correctness security conventions design tests)), "id" => %{"type" => "string", "pattern" => "^[a-f0-9]{32}$"}}
+          }
+        }
+      }
+    }
+  end
 
   defp comment_properties do
     %{
@@ -92,9 +119,10 @@ defmodule SymphonyElixir.Linear.AgentTool do
     operation = args["operation"]
     run_id = args["run_id"]
 
-    with :ok <- validate_repository(opts),
+    with :ok <- ReviewOperation.validate_retry(operation, run_id, args["retry"]),
+         :ok <- validate_repository(opts),
          {:ok, issue} <- fetch_authoritative_issue(opts) do
-      ReviewOperation.execute(operation, run_id, review_context(issue, opts), Keyword.fetch!(opts, :review))
+      ReviewOperation.execute(operation, run_id, review_context(issue, opts), Keyword.fetch!(opts, :review), retry: args["retry"])
     end
   end
 
@@ -325,6 +353,7 @@ defmodule SymphonyElixir.Linear.AgentTool do
   defp valid_argument?(%{"enum" => values}, value), do: value in values
   defp valid_argument?(%{"type" => "string"}, value), do: is_binary(value) and String.trim(value) != ""
   defp valid_argument?(%{"type" => ["string", "null"]}, value), do: is_nil(value) or (is_binary(value) and value != "")
+  defp valid_argument?(%{"type" => ["object", "null"]}, value), do: is_nil(value) or is_map(value)
 
   defp find_state(response, state_id) do
     case Enum.find(get_in(response, ["data", "issue", "team", "states", "nodes"]) || [], &(&1["id"] == state_id)) do

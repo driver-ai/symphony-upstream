@@ -390,7 +390,9 @@ and additional roots. Invalid enabled configuration fails dispatch validation.
 
 Configuration and repository identity bind before the first worker turn and remain fixed for the
 session across workflow reloads. Enabled sessions replace raw GraphQL with finite issue-bound read,
-comment, PR attachment, transition and review operations. Handoff requires fresh runner verification
+comment, PR attachment, transition and review operations. Explicit review retry names exact failed
+attempts and a recovery decision; its durable request survives restart while the installed runner
+owns retry eligibility, successful peer reuse and cumulative accounting. Handoff requires fresh runner verification
 of the current plan and PR subject, complete execution evidence and a successful process exit.
 Disabled deployments preserve their existing tools. The complete versioned protocol, lifecycle and
 state classification are specified in [review-runner.md](elixir/docs/review-runner.md).
