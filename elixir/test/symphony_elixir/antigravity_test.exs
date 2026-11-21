@@ -145,6 +145,9 @@ defmodule SymphonyElixir.AntigravityTest do
     while IFS= read -r line; do
       count=$((count + 1))
       printf 'INPUT:%s\n' "$line" >> "#{trace}"
+      printf 'MCP_MODE:%s\n' "$(stat -c '%a' .agents/mcp_config.json)" >> "#{trace}"
+      grep -q 'Bearer ' .agents/mcp_config.json && printf 'MCP_AUTH:present\n' >> "#{trace}"
+      printf '{"type":"notification","conversation_id":"conversation-1"}\n'
       printf '{"type":"notification","conversation_id":"conversation-1"}\n'
       printf '{"type":"result","conversation_id":"conversation-1","usage":{"input_tokens":%s}}\n' "$count"
     done
@@ -205,6 +208,8 @@ defmodule SymphonyElixir.AntigravityTest do
     assert contents =~ "--model runtime/gemini-4-neon"
     assert contents =~ "SECRET:unset"
     assert contents =~ "MODEL:runtime/gemini-4-neon"
+    assert contents =~ "MCP_MODE:600"
+    assert contents =~ "MCP_AUTH:present"
     assert length(Regex.scan(~r/^INPUT:/m, contents)) == 2
     assert %{"mcpServers" => restored_servers} = config_path |> File.read!() |> Jason.decode!()
     assert Map.has_key?(restored_servers, "custom")
@@ -223,6 +228,7 @@ defmodule SymphonyElixir.AntigravityTest do
     fake = Path.join(root, "fake-agy")
     ready = Path.join(root, "ready")
     pid_file = Path.join(root, "pid")
+    child_pid_file = Path.join(root, "child-pid")
     after_run = Path.join(root, "after-run")
     File.mkdir_p!(root)
 
@@ -231,7 +237,9 @@ defmodule SymphonyElixir.AntigravityTest do
     printf '%s' "$$" > "#{pid_file}"
     while IFS= read -r line; do
       : > "#{ready}"
-      sleep 30
+      sleep 30 &
+      printf '%s' "$!" > "#{child_pid_file}"
+      wait
     done
     """)
 
@@ -259,11 +267,14 @@ defmodule SymphonyElixir.AntigravityTest do
     assert :ok = Task.await(task, 5_000)
     assert File.exists?(after_run)
     pid = File.read!(pid_file) |> String.trim()
+    child_pid = File.read!(child_pid_file) |> String.trim()
 
-    assert eventually?(fn ->
-             {_output, status} = System.cmd("kill", ["-0", pid], stderr_to_stdout: true)
-             status != 0
-           end)
+    for stopped_pid <- [pid, child_pid] do
+      assert eventually?(fn ->
+               {_output, status} = System.cmd("kill", ["-0", stopped_pid], stderr_to_stdout: true)
+               status != 0
+             end)
+    end
   end
 
   defp http_post(url, token, payload) do

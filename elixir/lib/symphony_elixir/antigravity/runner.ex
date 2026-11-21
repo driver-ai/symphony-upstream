@@ -277,7 +277,19 @@ defmodule SymphonyElixir.Antigravity.Runner do
     end
   end
 
-  defp do_restore_mcp_config(path, {:ok, data}), do: File.write(path, data)
+  defp do_restore_mcp_config(path, {:ok, data}) do
+    temporary = temporary_config_path(path)
+
+    with :ok <- write_private_file(temporary, data),
+         :ok <- File.rename(temporary, path) do
+      :ok
+    else
+      error ->
+        File.rm(temporary)
+        error
+    end
+  end
+
   defp do_restore_mcp_config(path, :missing), do: File.rm(path)
 
   defp ensure_safe_config_parent(path, canonical_workspace) do
@@ -353,16 +365,52 @@ defmodule SymphonyElixir.Antigravity.Runner do
   end
 
   defp do_terminate_port(port, os_pid) do
-    if is_integer(os_pid),
-      do: System.cmd("kill", ["-TERM", Integer.to_string(os_pid)], stderr_to_stdout: true)
+    signal_process_tree(os_pid, "-TERM")
 
     receive do
       {^port, {:exit_status, _}} -> :ok
     after
       2_000 ->
-        if is_integer(os_pid), do: System.cmd("kill", ["-KILL", Integer.to_string(os_pid)], stderr_to_stdout: true)
+        signal_process_tree(os_pid, "-KILL")
         if port in Port.list(), do: Port.close(port)
     end
+  end
+
+  defp signal_process_tree(os_pid, signal) when is_integer(os_pid) do
+    descendants = process_descendants(os_pid)
+
+    Enum.each(descendants ++ [os_pid], fn pid ->
+      System.cmd("kill", [signal, Integer.to_string(pid)], stderr_to_stdout: true)
+    end)
+  end
+
+  defp signal_process_tree(_os_pid, _signal), do: :ok
+
+  defp process_descendants(root_pid) do
+    case System.cmd("ps", ["-eo", "pid=,ppid="], stderr_to_stdout: true) do
+      {output, 0} ->
+        children =
+          output
+          |> String.split("\n", trim: true)
+          |> Enum.reduce(%{}, fn line, acc ->
+            case line |> String.split() |> Enum.map(&Integer.parse/1) do
+              [{pid, ""}, {parent, ""}] -> Map.update(acc, parent, [pid], &[pid | &1])
+              _ -> acc
+            end
+          end)
+
+        collect_descendants([root_pid], children, [])
+
+      _ ->
+        []
+    end
+  end
+
+  defp collect_descendants([], _children, acc), do: acc
+
+  defp collect_descendants([pid | pending], children, acc) do
+    direct = Map.get(children, pid, [])
+    collect_descendants(direct ++ pending, children, direct ++ acc)
   end
 
   defp valid_environment_names(names),

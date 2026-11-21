@@ -5,6 +5,8 @@ defmodule SymphonyElixir.Antigravity.McpBridge do
 
   @max_header_bytes 65_536
   @max_body_bytes 1_048_576
+  @max_connections 16
+  @request_timeout_ms 10_000
 
   @type bridge :: %{listener: port(), acceptor: pid(), url: String.t(), token: String.t()}
 
@@ -17,15 +19,15 @@ defmodule SymphonyElixir.Antigravity.McpBridge do
            :gen_tcp.listen(0, [:binary, packet: :raw, active: false, ip: {127, 0, 0, 1}, reuseaddr: true]),
          {:ok, {_address, port}} <- :inet.sockname(listener) do
       owner = self()
-      acceptor = spawn(fn -> accept_loop(listener, owner, token, binding, executor, opts) end)
+      acceptor = spawn(fn -> accept_loop(listener, owner, token, binding, executor, opts, %{}) end)
       {:ok, %{listener: listener, acceptor: acceptor, url: "http://127.0.0.1:#{port}/mcp", token: token}}
     end
   end
 
   @spec stop(bridge()) :: :ok
   def stop(%{listener: listener, acceptor: acceptor}) do
-    if Process.alive?(acceptor), do: Process.exit(acceptor, :shutdown)
     :gen_tcp.close(listener)
+    if Process.alive?(acceptor), do: send(acceptor, :shutdown)
     :ok
   end
 
@@ -72,19 +74,70 @@ defmodule SymphonyElixir.Antigravity.McpBridge do
 
   defp result(id, value), do: %{"jsonrpc" => "2.0", "id" => id, "result" => value}
 
-  defp accept_loop(listener, owner, token, binding, executor, opts) do
-    case :gen_tcp.accept(listener) do
+  defp accept_loop(listener, owner, token, binding, executor, opts, children) do
+    children = reap_children(children)
+
+    receive do
+      :shutdown ->
+        stop_children(children)
+        :gen_tcp.close(listener)
+    after
+      0 -> continue_accepting(listener, owner, token, binding, executor, opts, children)
+    end
+  end
+
+  defp continue_accepting(listener, owner, token, binding, executor, opts, children) do
+    cond do
+      not Process.alive?(owner) ->
+        stop_children(children)
+        :gen_tcp.close(listener)
+
+      map_size(children) >= @max_connections ->
+        receive do
+          {:DOWN, reference, :process, _pid, _reason} ->
+            accept_loop(listener, owner, token, binding, executor, opts, Map.delete(children, reference))
+
+          :shutdown ->
+            stop_children(children)
+            :gen_tcp.close(listener)
+        after
+          250 -> accept_loop(listener, owner, token, binding, executor, opts, children)
+        end
+
+      true ->
+        accept_connection(listener, owner, token, binding, executor, opts, children)
+    end
+  end
+
+  defp accept_connection(listener, owner, token, binding, executor, opts, children) do
+    case :gen_tcp.accept(listener, 1_000) do
       {:ok, socket} ->
-        spawn_link(fn -> serve(socket, token, binding, Keyword.put(opts, :tool_executor, executor)) end)
-        accept_loop(listener, owner, token, binding, executor, opts)
+        {pid, reference} =
+          spawn_monitor(fn -> serve(socket, token, binding, Keyword.put(opts, :tool_executor, executor)) end)
+
+        accept_loop(listener, owner, token, binding, executor, opts, Map.put(children, reference, pid))
+
+      {:error, :timeout} ->
+        accept_loop(listener, owner, token, binding, executor, opts, children)
 
       {:error, :closed} ->
+        stop_children(children)
         :ok
 
       {:error, reason} ->
         send(owner, {:antigravity_mcp_error, reason})
     end
   end
+
+  defp reap_children(children) do
+    receive do
+      {:DOWN, reference, :process, _pid, _reason} -> reap_children(Map.delete(children, reference))
+    after
+      0 -> children
+    end
+  end
+
+  defp stop_children(children), do: Enum.each(children, fn {_reference, pid} -> Process.exit(pid, :shutdown) end)
 
   defp serve(socket, token, binding, opts) do
     response =
@@ -110,28 +163,31 @@ defmodule SymphonyElixir.Antigravity.McpBridge do
     :gen_tcp.close(socket)
   end
 
-  defp read_request(socket, token), do: read_request(socket, token, "")
+  defp read_request(socket, token) do
+    deadline = System.monotonic_time(:millisecond) + @request_timeout_ms
+    read_request(socket, token, "", deadline)
+  end
 
-  defp read_request(_socket, _token, buffer) when byte_size(buffer) > @max_header_bytes + @max_body_bytes,
+  defp read_request(_socket, _token, buffer, _deadline) when byte_size(buffer) > @max_header_bytes + @max_body_bytes,
     do: {:error, :too_large}
 
-  defp read_request(socket, token, buffer) do
+  defp read_request(socket, token, buffer, deadline) do
     case String.split(buffer, "\r\n\r\n", parts: 2) do
       [raw_headers, body] ->
         if byte_size(raw_headers) > @max_header_bytes do
           {:error, :too_large}
         else
-          finish_request(socket, token, buffer, raw_headers, body)
+          finish_request(socket, token, buffer, raw_headers, body, deadline)
         end
 
       _ ->
-        receive_request_data(socket, token, buffer)
+        receive_request_data(socket, token, buffer, deadline)
     end
   rescue
     _ -> {:error, :invalid_http_request}
   end
 
-  defp finish_request(socket, token, buffer, raw_headers, body) do
+  defp finish_request(socket, token, buffer, raw_headers, body, deadline) do
     {method, headers} = parse_headers(raw_headers)
     length = headers |> Map.get("content-length", "0") |> String.to_integer()
 
@@ -139,14 +195,20 @@ defmodule SymphonyElixir.Antigravity.McpBridge do
       not authorized?(headers, token) -> {:error, :unauthorized}
       length > @max_body_bytes -> {:error, :too_large}
       byte_size(body) >= length -> {:ok, %{method: method, headers: headers, body: binary_part(body, 0, length)}}
-      true -> receive_request_data(socket, token, buffer)
+      true -> receive_request_data(socket, token, buffer, deadline)
     end
   end
 
-  defp receive_request_data(socket, token, buffer) do
-    case :gen_tcp.recv(socket, 0, 5_000) do
-      {:ok, data} -> read_request(socket, token, buffer <> data)
-      error -> error
+  defp receive_request_data(socket, token, buffer, deadline) do
+    remaining = deadline - System.monotonic_time(:millisecond)
+
+    if remaining <= 0 do
+      {:error, :timeout}
+    else
+      case :gen_tcp.recv(socket, 0, min(5_000, remaining)) do
+        {:ok, data} -> read_request(socket, token, buffer <> data, deadline)
+        error -> error
+      end
     end
   end
 
