@@ -63,7 +63,7 @@ defmodule SymphonyElixir.Antigravity.McpBridge do
   end
 
   def dispatch(%{"id" => id}, _binding, _opts),
-    do: %{"jsonrpc" => "2.0", "id" => id, "error" => %{"code" => -32601, "message" => "Method not found"}}
+    do: %{"jsonrpc" => "2.0", "id" => id, "error" => %{"code" => -32_601, "message" => "Method not found"}}
 
   def dispatch(_request, _binding, _opts), do: %{}
 
