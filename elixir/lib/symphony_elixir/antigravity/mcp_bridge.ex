@@ -2,26 +2,43 @@ defmodule SymphonyElixir.Antigravity.McpBridge do
   @moduledoc false
 
   alias SymphonyElixir.Codex.DynamicTool
+  alias SymphonyElixir.Antigravity.PeerAuth
 
   @max_header_bytes 65_536
   @max_body_bytes 1_048_576
   @max_connections 16
   @request_timeout_ms 10_000
 
-  @type bridge :: %{listener: port(), acceptor: pid(), url: String.t(), token: String.t()}
+  @type bridge :: %{listener: port(), acceptor: pid(), peer_root: reference(), url: String.t(), token: String.t()}
 
   @spec start(map(), keyword()) :: {:ok, bridge()} | {:error, term()}
   def start(binding, opts \\ []) do
     executor = Keyword.get(opts, :tool_executor, &DynamicTool.execute/4)
     token = :crypto.strong_rand_bytes(32) |> Base.url_encode64(padding: false)
+    peer_root = :atomics.new(1, signed: true)
+    :atomics.put(peer_root, 1, if(Keyword.get(opts, :require_process_binding, false), do: 0, else: -1))
 
     with {:ok, listener} <-
            :gen_tcp.listen(0, [:binary, packet: :raw, active: false, ip: {127, 0, 0, 1}, reuseaddr: true]),
          {:ok, {_address, port}} <- :inet.sockname(listener) do
       owner = self()
-      acceptor = spawn(fn -> accept_loop(listener, owner, token, binding, executor, opts, %{}) end)
-      {:ok, %{listener: listener, acceptor: acceptor, url: "http://127.0.0.1:#{port}/mcp", token: token}}
+      acceptor = spawn(fn -> accept_loop(listener, owner, token, binding, executor, opts, peer_root, %{}) end)
+
+      {:ok,
+       %{
+         listener: listener,
+         acceptor: acceptor,
+         peer_root: peer_root,
+         url: "http://127.0.0.1:#{port}/mcp",
+         token: token
+       }}
     end
+  end
+
+  @spec authorize_process(bridge(), pos_integer()) :: :ok
+  def authorize_process(%{peer_root: peer_root}, os_pid) when is_integer(os_pid) and os_pid > 0 do
+    :atomics.put(peer_root, 1, os_pid)
+    :ok
   end
 
   @spec stop(bridge()) :: :ok
@@ -82,7 +99,7 @@ defmodule SymphonyElixir.Antigravity.McpBridge do
     kind, reason -> %{"success" => false, "error" => Exception.format(kind, reason, [])}
   end
 
-  defp accept_loop(listener, owner, token, binding, executor, opts, children) do
+  defp accept_loop(listener, owner, token, binding, executor, opts, peer_root, children) do
     children = reap_children(children)
 
     receive do
@@ -90,11 +107,11 @@ defmodule SymphonyElixir.Antigravity.McpBridge do
         stop_children(children)
         :gen_tcp.close(listener)
     after
-      0 -> continue_accepting(listener, owner, token, binding, executor, opts, children)
+      0 -> continue_accepting(listener, owner, token, binding, executor, opts, peer_root, children)
     end
   end
 
-  defp continue_accepting(listener, owner, token, binding, executor, opts, children) do
+  defp continue_accepting(listener, owner, token, binding, executor, opts, peer_root, children) do
     cond do
       not Process.alive?(owner) ->
         stop_children(children)
@@ -103,30 +120,39 @@ defmodule SymphonyElixir.Antigravity.McpBridge do
       map_size(children) >= @max_connections ->
         receive do
           {:DOWN, reference, :process, _pid, _reason} ->
-            accept_loop(listener, owner, token, binding, executor, opts, Map.delete(children, reference))
+            accept_loop(listener, owner, token, binding, executor, opts, peer_root, Map.delete(children, reference))
 
           :shutdown ->
             stop_children(children)
             :gen_tcp.close(listener)
         after
-          250 -> accept_loop(listener, owner, token, binding, executor, opts, children)
+          250 -> accept_loop(listener, owner, token, binding, executor, opts, peer_root, children)
         end
 
       true ->
-        accept_connection(listener, owner, token, binding, executor, opts, children)
+        accept_connection(listener, owner, token, binding, executor, opts, peer_root, children)
     end
   end
 
-  defp accept_connection(listener, owner, token, binding, executor, opts, children) do
+  defp accept_connection(listener, owner, token, binding, executor, opts, peer_root, children) do
     case :gen_tcp.accept(listener, 1_000) do
       {:ok, socket} ->
-        {pid, reference} =
-          spawn_monitor(fn -> serve(socket, token, binding, Keyword.put(opts, :tool_executor, executor)) end)
+        root_pid = :atomics.get(peer_root, 1)
 
-        accept_loop(listener, owner, token, binding, executor, opts, Map.put(children, reference, pid))
+        {pid, reference} =
+          spawn_monitor(fn ->
+            if PeerAuth.authorized?(socket, root_pid) do
+              serve(socket, token, binding, Keyword.put(opts, :tool_executor, executor))
+            else
+              send_response(socket, {401, %{"error" => "unauthorized process"}})
+              :gen_tcp.close(socket)
+            end
+          end)
+
+        accept_loop(listener, owner, token, binding, executor, opts, peer_root, Map.put(children, reference, pid))
 
       {:error, :timeout} ->
-        accept_loop(listener, owner, token, binding, executor, opts, children)
+        accept_loop(listener, owner, token, binding, executor, opts, peer_root, children)
 
       {:error, :closed} ->
         stop_children(children)

@@ -31,7 +31,9 @@ defmodule SymphonyElixir.Antigravity.Runner do
     thread_id = "antigravity-" <> (:crypto.strong_rand_bytes(16) |> Base.url_encode64(padding: false))
     context = [issue: issue, workspace: workspace, thread_id: thread_id, session_id: thread_id]
 
-    with {:ok, bridge} <- McpBridge.start(binding, Keyword.put(opts, :context, context)) do
+    bridge_opts = opts |> Keyword.put(:context, context) |> Keyword.put(:require_process_binding, true)
+
+    with {:ok, bridge} <- McpBridge.start(binding, bridge_opts) do
       start_with_bridge(bridge, workspace, settings.command, model_alias, binding, thread_id)
     end
   end
@@ -50,10 +52,13 @@ defmodule SymphonyElixir.Antigravity.Runner do
   defp start_with_config(bridge, config_path, previous_config, workspace, command, model_alias, binding, thread_id) do
     case start_port(workspace, command, model_alias, binding) do
       {:ok, port} ->
+        os_pid = port_os_pid(port)
+        :ok = McpBridge.authorize_process(bridge, os_pid)
+
         {:ok,
          %{
            port: port,
-           os_pid: port_os_pid(port),
+           os_pid: os_pid,
            bridge: bridge,
            config_path: config_path,
            previous_config: previous_config,

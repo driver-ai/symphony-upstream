@@ -148,6 +148,20 @@ defmodule SymphonyElixir.AntigravityTest do
     assert_receive {:http_executed, "linear_read", %{"operation" => "issue"}, [thread_id: "agy-thread", session_id: "agy-session"]}
   end
 
+  test "MCP bridge rejects a valid token until its client process tree is bound" do
+    binding = %{tool_specs: []}
+    assert {:ok, bridge} = McpBridge.start(binding, require_process_binding: true)
+    on_exit(fn -> McpBridge.stop(bridge) end)
+
+    assert http_post(bridge.url, bridge.token, %{"id" => 1, "method" => "initialize"}) =~
+             "401 Error"
+
+    assert :ok = McpBridge.authorize_process(bridge, String.to_integer(System.pid()))
+
+    assert http_post(bridge.url, bridge.token, %{"id" => 2, "method" => "initialize"}) =~
+             "200 OK"
+  end
+
   test "fake agy streams multiple turns, reports usage, isolates secrets, and exposes hook routing" do
     root = Path.join(System.tmp_dir!(), "symphony-antigravity-#{System.unique_integer([:positive])}")
     workspace_root = Path.join(root, "workspaces")
