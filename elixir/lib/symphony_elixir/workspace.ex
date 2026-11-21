@@ -569,7 +569,9 @@ defmodule SymphonyElixir.Workspace do
       issue_id: issue_id,
       issue_identifier: identifier || "issue",
       project_slug: project_field(project, :slug_id),
-      project_name: project_field(project, :name)
+      project_name: project_field(project, :name),
+      harness: Map.get(issue, :symphony_harness),
+      model_alias: Map.get(issue, :symphony_model_alias)
     }
   end
 
@@ -595,7 +597,9 @@ defmodule SymphonyElixir.Workspace do
     issue_id: "SYMPHONY_ISSUE_ID",
     issue_identifier: "SYMPHONY_ISSUE_IDENTIFIER",
     project_slug: "SYMPHONY_ISSUE_PROJECT_SLUG",
-    project_name: "SYMPHONY_ISSUE_PROJECT_NAME"
+    project_name: "SYMPHONY_ISSUE_PROJECT_NAME",
+    harness: "SYMPHONY_HARNESS",
+    model_alias: "SYMPHONY_MODEL_ALIAS"
   ]
 
   defp hook_env(issue_context) when is_map(issue_context) do

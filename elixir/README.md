@@ -137,6 +137,11 @@ agent:
   max_turns: 20
 codex:
   command: codex app-server
+# Optional opt-in harness for supported Gemini 4 issue labels.
+# antigravity:
+#   command: agy
+#   stall_timeout_ms: 300000
+#   external_sandbox_attested: false
 # Optional; local Linear workers only. Paths must be installed and outside worker-writable roots.
 review:
   enabled: false
@@ -179,6 +184,31 @@ Notes:
   by the Codex turn sandbox.
 - `agent.max_turns` caps how many back-to-back Codex turns Symphony will run in a single agent
   invocation when a turn completes normally but the issue is still in an active state. Default: `20`.
+- `antigravity` is optional. When configured, exactly one of `model:gemini-4-neon`,
+  `model:gemini-4-argon`, `model:gemini-4-carbon`, or `model:gemini-4-hydrogen` routes an issue to
+  `agy` with the corresponding `runtime/gemini-4-*` model. A supported Gemini label combined with
+  any other `model:*` label is rejected; unrelated model labels remain on the Codex path.
+- Antigravity uses persistent stream-JSON print mode and a per-session authenticated loopback MCP
+  server for Symphony's bound tools. Tracker secret environment variables are removed from the
+  child. Before/after hooks receive `SYMPHONY_HARNESS` and, for Antigravity,
+  `SYMPHONY_MODEL_ALIAS`.
+- The workspace `.agents/mcp_config.json` location and Streamable HTTP `serverUrl`/`headers` shape
+  follow the Antigravity MCP contract documented at https://www.agy.dev/docs/mcp/. Persistent
+  `--input-format stream-json` print mode is documented in the official CLI changelog at
+  https://github.com/google-antigravity/antigravity-cli/blob/main/CHANGELOG.md. The runner uses
+  the CLI's documented `--print --input-format stream-json --output-format stream-json` interface.
+- Antigravity currently supports local workers only. `stall_timeout_ms` is the maximum silence
+  interval while an Antigravity turn streams, not a total turn deadline. The orchestrator's
+  `codex.stall_timeout_ms` remains the outer inactivity limit for every harness, so configure it
+  above the Antigravity timeout to allow runner cleanup. The headless launch uses agy's documented
+  workspace sandbox with permission prompts disabled.
+- When `review.enabled` is true, Antigravity routing fails closed unless
+  `antigravity.external_sandbox_attested` is explicitly true. Setting it is an operator attestation
+  that `antigravity.command` enforces OS-level filesystem confinement (for example, a host
+  `bubblewrap` launcher) that prevents `agy`, including when permissions are skipped, from reading
+  or changing `review.state_root` or any path outside the issue workspace. The runtime does not
+  verify or create that host boundary. Review-disabled Antigravity runs do not require the
+  attestation.
 - If the Markdown body is blank, Symphony uses a default prompt template that includes the issue
   identifier, title, and body.
 - Use `hooks.after_create` to bootstrap a fresh workspace. For a Git-backed repo, you can run

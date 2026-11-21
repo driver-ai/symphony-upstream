@@ -665,6 +665,11 @@ not require recognizing or validating extension fields unless that extension is 
 - `codex.read_timeout_ms`: integer, default `5000`
 - `codex.stall_timeout_ms`: integer, default `300000`
 - `codex.stop_timeout_ms`: integer, default `60000`
+Antigravity is an optional local-worker extension (see section 7.1). Its timeout is a
+streaming-silence timeout; `codex.stall_timeout_ms` remains the outer orchestrator inactivity limit
+for all harnesses and SHOULD be larger than the Antigravity timeout.
+`hooks.before_run` and `hooks.after_run` receive `SYMPHONY_HARNESS`; Antigravity runs additionally
+receive `SYMPHONY_MODEL_ALIAS`. The harness launches with its sandbox rooted at the issue workspace.
 
 ## 7. Orchestration State Machine
 
@@ -700,6 +705,16 @@ Important nuance:
 - After each normal turn completion, the worker re-checks the tracker issue state.
 - If the issue is still in an active state, the worker SHOULD start another turn on the same live
   coding-agent thread in the same workspace, up to `agent.max_turns`.
+- A single supported `model:gemini-4-*` label MAY select the optional Antigravity harness. A
+  supported label combined with another `model:*` label, or without Antigravity configuration,
+  MUST fail explicitly. Unrelated model labels remain on the Codex path.
+- The extension accepts `antigravity.command` (a required non-empty shell command),
+  `antigravity.stall_timeout_ms` (a positive integer, default `300000`), and
+  `antigravity.external_sandbox_attested` (a boolean, default `false`). When review is enabled,
+  Antigravity routing MUST fail closed unless the attestation is true. A true value is the
+  operator's assertion that `antigravity.command` applies OS-level filesystem confinement so the
+  worker cannot access `review.state_root` or paths outside the issue workspace, including when
+  Antigravity permission checks are skipped. When `antigravity` is absent, every issue uses Codex.
 - The first turn SHOULD use the full rendered task prompt.
 - Continuation turns SHOULD send only continuation guidance to the existing thread, not resend the
   original task prompt that is already present in thread history.
@@ -861,6 +876,7 @@ Part A: Stall detection
   - `started_at`
 - If `elapsed_ms > codex.stall_timeout_ms`, terminate the worker and queue a retry.
 - If `stall_timeout_ms <= 0`, skip stall detection entirely.
+- This outer `codex.stall_timeout_ms` applies to Codex and Antigravity workers alike.
 
 Part B: Tracker state refresh
 
