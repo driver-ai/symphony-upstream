@@ -29,33 +29,40 @@ defmodule SymphonyElixir.Antigravity.Runner do
     context = [issue: issue, workspace: workspace, thread_id: thread_id, session_id: thread_id]
 
     with {:ok, bridge} <- McpBridge.start(binding, Keyword.put(opts, :context, context)) do
-      case install_mcp_config(workspace, bridge) do
-        {:ok, config_path, previous_config} ->
-          case start_port(workspace, settings.command, model_alias, binding) do
-            {:ok, port} ->
-              {:ok,
-               %{
-                 port: port,
-                 os_pid: port_os_pid(port),
-                 bridge: bridge,
-                 config_path: config_path,
-                 previous_config: previous_config,
-                 binding: binding,
-                 workspace: workspace,
-                 model_alias: model_alias,
-                 thread_id: thread_id
-               }}
+      start_with_bridge(bridge, workspace, settings.command, model_alias, binding, thread_id)
+    end
+  end
 
-            error ->
-              restore_mcp_config(config_path, previous_config)
-              McpBridge.stop(bridge)
-              error
-          end
+  defp start_with_bridge(bridge, workspace, command, model_alias, binding, thread_id) do
+    with {:ok, config_path, previous_config} <- install_mcp_config(workspace, bridge) do
+      start_with_config(bridge, config_path, previous_config, workspace, command, model_alias, binding, thread_id)
+    else
+      error ->
+        McpBridge.stop(bridge)
+        error
+    end
+  end
 
-        error ->
-          McpBridge.stop(bridge)
-          error
-      end
+  defp start_with_config(bridge, config_path, previous_config, workspace, command, model_alias, binding, thread_id) do
+    case start_port(workspace, command, model_alias, binding) do
+      {:ok, port} ->
+        {:ok,
+         %{
+           port: port,
+           os_pid: port_os_pid(port),
+           bridge: bridge,
+           config_path: config_path,
+           previous_config: previous_config,
+           binding: binding,
+           workspace: workspace,
+           model_alias: model_alias,
+           thread_id: thread_id
+         }}
+
+      error ->
+        restore_mcp_config(config_path, previous_config)
+        McpBridge.stop(bridge)
+        error
     end
   end
 
@@ -169,43 +176,48 @@ defmodule SymphonyElixir.Antigravity.Runner do
     with {:ok, canonical_workspace} <- PathSafety.canonicalize(workspace),
          :ok <- ensure_safe_config_parent(path, canonical_workspace),
          :ok <- refuse_symlink(path) do
-      previous =
-        case File.read(path) do
-          {:ok, data} -> {:ok, data}
-          _ -> :missing
-        end
+      write_mcp_config(path, bridge)
+    end
+  end
 
-      File.mkdir_p!(Path.dirname(path))
+  defp write_mcp_config(path, bridge) do
+    previous = read_previous_config(path)
+    File.mkdir_p!(Path.dirname(path))
+    existing = decode_previous_config(previous)
+    servers = normalize_mcp_servers(existing)
+    server = %{"serverUrl" => bridge.url, "headers" => %{"Authorization" => "Bearer #{bridge.token}"}}
+    config = Map.put(existing, "mcpServers", Map.put(servers, "symphony", server))
 
-      existing =
-        case previous do
-          {:ok, data} ->
-            case Jason.decode(data) do
-              {:ok, decoded} when is_map(decoded) -> decoded
-              _ -> %{}
-            end
+    case File.write(path, Jason.encode!(config)) do
+      :ok ->
+        File.chmod!(path, 0o600)
+        {:ok, path, previous}
 
-          :missing ->
-            %{}
-        end
+      error ->
+        error
+    end
+  end
 
-      servers =
-        case Map.get(existing, "mcpServers", %{}) do
-          value when is_map(value) -> value
-          _ -> %{}
-        end
+  defp read_previous_config(path) do
+    case File.read(path) do
+      {:ok, data} -> {:ok, data}
+      _ -> :missing
+    end
+  end
 
-      server = %{"serverUrl" => bridge.url, "headers" => %{"Authorization" => "Bearer #{bridge.token}"}}
-      config = Map.put(existing, "mcpServers", Map.put(servers, "symphony", server))
+  defp decode_previous_config({:ok, data}) do
+    case Jason.decode(data) do
+      {:ok, decoded} when is_map(decoded) -> decoded
+      _ -> %{}
+    end
+  end
 
-      case File.write(path, Jason.encode!(config)) do
-        :ok ->
-          File.chmod!(path, 0o600)
-          {:ok, path, previous}
+  defp decode_previous_config(:missing), do: %{}
 
-        error ->
-          error
-      end
+  defp normalize_mcp_servers(existing) do
+    case Map.get(existing, "mcpServers", %{}) do
+      value when is_map(value) -> value
+      _ -> %{}
     end
   end
 

@@ -118,15 +118,7 @@ defmodule SymphonyElixir.Antigravity.McpBridge do
         if byte_size(raw_headers) > @max_header_bytes do
           {:error, :too_large}
         else
-          {method, headers} = parse_headers(raw_headers)
-          length = headers |> Map.get("content-length", "0") |> String.to_integer()
-
-          cond do
-            not authorized?(headers, token) -> {:error, :unauthorized}
-            length > @max_body_bytes -> {:error, :too_large}
-            byte_size(body) >= length -> {:ok, %{method: method, headers: headers, body: binary_part(body, 0, length)}}
-            true -> receive_request_data(socket, token, buffer)
-          end
+          finish_request(socket, token, buffer, raw_headers, body)
         end
 
       _ ->
@@ -134,6 +126,18 @@ defmodule SymphonyElixir.Antigravity.McpBridge do
     end
   rescue
     _ -> {:error, :invalid_http_request}
+  end
+
+  defp finish_request(socket, token, buffer, raw_headers, body) do
+    {method, headers} = parse_headers(raw_headers)
+    length = headers |> Map.get("content-length", "0") |> String.to_integer()
+
+    cond do
+      not authorized?(headers, token) -> {:error, :unauthorized}
+      length > @max_body_bytes -> {:error, :too_large}
+      byte_size(body) >= length -> {:ok, %{method: method, headers: headers, body: binary_part(body, 0, length)}}
+      true -> receive_request_data(socket, token, buffer)
+    end
   end
 
   defp receive_request_data(socket, token, buffer) do
@@ -145,7 +149,10 @@ defmodule SymphonyElixir.Antigravity.McpBridge do
 
   defp parse_headers(raw) do
     [request_line | lines] = String.split(raw, "\r\n")
-    method = if String.starts_with?(request_line, "POST "), do: :post, else: if(String.starts_with?(request_line, "GET "), do: :get, else: :other)
+    method =
+      if String.starts_with?(request_line, "POST "),
+        do: :post,
+        else: if(String.starts_with?(request_line, "GET "), do: :get, else: :other)
 
     headers =
       Enum.reduce(lines, %{}, fn line, acc ->
