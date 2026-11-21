@@ -191,6 +191,10 @@ Notes:
   server for Symphony's bound tools. Tracker secret environment variables are removed from the
   child. Before/after hooks receive `SYMPHONY_HARNESS` and, for Antigravity,
   `SYMPHONY_MODEL_ALIAS`.
+- Antigravity currently supports local workers only. `stall_timeout_ms` is the maximum silence
+  interval while an Antigravity turn streams, not a total turn deadline. Its `--sandbox` invocation
+  remains bounded to the issue workspace even though permission prompts are disabled for headless
+  operation.
 - If the Markdown body is blank, Symphony uses a default prompt template that includes the issue
   identifier, title, and body.
 - Use `hooks.after_create` to bootstrap a fresh workspace. For a Git-backed repo, you can run

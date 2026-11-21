@@ -44,6 +44,9 @@ defmodule SymphonyElixir.AntigravityTest do
              )
 
     assert length(labels) == 2
+
+    assert {:ok, {:codex, nil}} =
+             AgentRunner.harness_for_issue(%Issue{labels: ["model:foo", "model:bar"]}, nil)
   end
 
   test "MCP bridge exposes bound tools and delegates calls through the supplied executor" do
@@ -83,6 +86,37 @@ defmodule SymphonyElixir.AntigravityTest do
     end
   end
 
+  test "MCP bridge enforces bearer authentication over loopback HTTP" do
+    parent = self()
+    binding = %{tool_specs: [%{"name" => "linear_read", "description" => "read", "inputSchema" => %{}}]}
+
+    executor = fn name, arguments, _binding, context ->
+      send(parent, {:http_executed, name, arguments, context})
+      %{"success" => true}
+    end
+
+    assert {:ok, bridge} =
+             McpBridge.start(binding,
+               tool_executor: executor,
+               context: [thread_id: "agy-thread", session_id: "agy-session"]
+             )
+
+    on_exit(fn -> McpBridge.stop(bridge) end)
+    assert http_post(bridge.url, "wrong", %{"id" => 1, "method" => "tools/list"}) =~ "401 Error"
+
+    assert http_post(bridge.url, bridge.token, %{"id" => 2, "method" => "initialize"}) =~
+             "\"protocolVersion\""
+
+    assert http_post(bridge.url, bridge.token, %{
+             "id" => 3,
+             "method" => "tools/call",
+             "params" => %{"name" => "linear_read", "arguments" => %{"operation" => "issue"}}
+           }) =~ "200 OK"
+
+    assert_receive {:http_executed, "linear_read", %{"operation" => "issue"},
+                    [thread_id: "agy-thread", session_id: "agy-session"]}
+  end
+
   test "fake agy streams multiple turns, reports usage, isolates secrets, and exposes hook routing" do
     root = Path.join(System.tmp_dir!(), "symphony-antigravity-#{System.unique_integer([:positive])}")
     workspace_root = Path.join(root, "workspaces")
@@ -104,10 +138,11 @@ defmodule SymphonyElixir.AntigravityTest do
     """)
 
     File.chmod!(fake, 0o755)
+    previous_linear_key = System.get_env("LINEAR_API_KEY")
     System.put_env("LINEAR_API_KEY", "must-not-leak")
 
     on_exit(fn ->
-      System.delete_env("LINEAR_API_KEY")
+      restore_env("LINEAR_API_KEY", previous_linear_key)
       File.rm_rf(root)
     end)
 
@@ -145,6 +180,7 @@ defmodule SymphonyElixir.AntigravityTest do
     assert contents =~ "SECRET:unset"
     assert contents =~ "MODEL:runtime/gemini-4-neon"
     assert length(Regex.scan(~r/^INPUT:/m, contents)) == 2
+    refute File.exists?(Path.join([workspace_root, "AGY-1", ".agents", "mcp_config.json"]))
 
     assert File.read!(Path.join([workspace_root, "AGY-1", "hook-env"])) ==
              "antigravity:runtime/gemini-4-neon"
@@ -157,11 +193,13 @@ defmodule SymphonyElixir.AntigravityTest do
     workspace_root = Path.join(root, "workspaces")
     fake = Path.join(root, "fake-agy")
     ready = Path.join(root, "ready")
+    pid_file = Path.join(root, "pid")
     after_run = Path.join(root, "after-run")
     File.mkdir_p!(root)
 
     File.write!(fake, """
     #!/bin/sh
+    printf '%s' "$$" > "#{pid_file}"
     while IFS= read -r line; do
       : > "#{ready}"
       sleep 30
@@ -191,6 +229,28 @@ defmodule SymphonyElixir.AntigravityTest do
     assert :ok = AgentRunner.request_stop(task.pid, :issue_inactive)
     assert :ok = Task.await(task, 5_000)
     assert File.exists?(after_run)
+    pid = File.read!(pid_file) |> String.trim()
+    {_output, status} = System.cmd("kill", ["-0", pid], stderr_to_stdout: true)
+    assert status != 0
+  end
+
+  defp http_post(url, token, payload) do
+    %URI{host: host, port: port, path: path} = URI.parse(url)
+    {:ok, socket} = :gen_tcp.connect(String.to_charlist(host), port, [:binary, active: false])
+    body = Jason.encode!(payload)
+
+    request =
+      "POST #{path} HTTP/1.1\r\nhost: #{host}\r\nauthorization: Bearer #{token}\r\ncontent-type: application/json\r\ncontent-length: #{byte_size(body)}\r\nconnection: close\r\n\r\n#{body}"
+
+    :ok = :gen_tcp.send(socket, request)
+    receive_http(socket, "")
+  end
+
+  defp receive_http(socket, acc) do
+    case :gen_tcp.recv(socket, 0, 2_000) do
+      {:ok, data} -> receive_http(socket, acc <> data)
+      {:error, :closed} -> acc
+    end
   end
 
   defp eventually?(predicate, attempts \\ 100)

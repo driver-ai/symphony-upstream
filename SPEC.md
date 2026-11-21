@@ -669,6 +669,10 @@ not require recognizing or validating extension fields unless that extension is 
 - `antigravity.command`: non-empty shell command, required when `antigravity` is present
 - `antigravity.stall_timeout_ms`: positive integer, default `300000`
 
+Antigravity is an optional local-worker extension. Its timeout is a streaming-silence timeout.
+`hooks.before_run` and `hooks.after_run` receive `SYMPHONY_HARNESS`; Antigravity runs additionally
+receive `SYMPHONY_MODEL_ALIAS`. The harness launches with its sandbox rooted at the issue workspace.
+
 ## 7. Orchestration State Machine
 
 The orchestrator is the only component that mutates scheduling state. All worker outcomes are

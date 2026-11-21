@@ -3,6 +3,9 @@ defmodule SymphonyElixir.Antigravity.McpBridge do
 
   alias SymphonyElixir.Codex.DynamicTool
 
+  @max_header_bytes 65_536
+  @max_body_bytes 1_048_576
+
   @type bridge :: %{listener: port(), acceptor: pid(), url: String.t(), token: String.t()}
 
   @spec start(map(), keyword()) :: {:ok, bridge()} | {:error, term()}
@@ -85,12 +88,18 @@ defmodule SymphonyElixir.Antigravity.McpBridge do
 
   defp serve(socket, token, binding, opts) do
     response =
-      with {:ok, request} <- read_request(socket),
-           true <- authorized?(request.headers, token),
+      with {:ok, request} <- read_request(socket, token),
+           :post <- request.method,
            {:ok, payload} <- Jason.decode(request.body) do
-        {200, dispatch(payload, binding, opts)}
+        if payload["method"] == "notifications/initialized" do
+          {202, nil}
+        else
+          {200, dispatch(payload, binding, opts)}
+        end
       else
-        false -> {401, %{"error" => "unauthorized"}}
+        {:error, :unauthorized} -> {401, %{"error" => "unauthorized"}}
+        {:error, :too_large} -> {413, %{"error" => "request too large"}}
+        method when method in [:get, :other] -> {405, %{"error" => "method not allowed"}}
         _ -> {400, %{"error" => "invalid request"}}
       end
 
@@ -98,51 +107,65 @@ defmodule SymphonyElixir.Antigravity.McpBridge do
     :gen_tcp.close(socket)
   end
 
-  defp read_request(socket), do: read_request(socket, "")
+  defp read_request(socket, token), do: read_request(socket, token, "")
 
-  defp read_request(socket, buffer) do
+  defp read_request(_socket, _token, buffer) when byte_size(buffer) > @max_header_bytes + @max_body_bytes,
+    do: {:error, :too_large}
+
+  defp read_request(socket, token, buffer) do
     case String.split(buffer, "\r\n\r\n", parts: 2) do
       [raw_headers, body] ->
-        headers = parse_headers(raw_headers)
-        length = headers |> Map.get("content-length", "0") |> String.to_integer()
-
-        if byte_size(body) >= length do
-          {:ok, %{headers: headers, body: binary_part(body, 0, length)}}
+        if byte_size(raw_headers) > @max_header_bytes do
+          {:error, :too_large}
         else
-          receive_request_data(socket, buffer)
+          {method, headers} = parse_headers(raw_headers)
+          length = headers |> Map.get("content-length", "0") |> String.to_integer()
+
+          cond do
+            not authorized?(headers, token) -> {:error, :unauthorized}
+            length > @max_body_bytes -> {:error, :too_large}
+            byte_size(body) >= length -> {:ok, %{method: method, headers: headers, body: binary_part(body, 0, length)}}
+            true -> receive_request_data(socket, token, buffer)
+          end
         end
 
       _ ->
-        receive_request_data(socket, buffer)
+        receive_request_data(socket, token, buffer)
     end
   rescue
     _ -> {:error, :invalid_http_request}
   end
 
-  defp receive_request_data(socket, buffer) do
+  defp receive_request_data(socket, token, buffer) do
     case :gen_tcp.recv(socket, 0, 5_000) do
-      {:ok, data} -> read_request(socket, buffer <> data)
+      {:ok, data} -> read_request(socket, token, buffer <> data)
       error -> error
     end
   end
 
   defp parse_headers(raw) do
-    raw
-    |> String.split("\r\n")
-    |> Enum.drop(1)
-    |> Enum.reduce(%{}, fn line, acc ->
+    [request_line | lines] = String.split(raw, "\r\n")
+    method = if String.starts_with?(request_line, "POST "), do: :post, else: if(String.starts_with?(request_line, "GET "), do: :get, else: :other)
+
+    headers = Enum.reduce(lines, %{}, fn line, acc ->
       case String.split(line, ":", parts: 2) do
         [name, value] -> Map.put(acc, String.downcase(String.trim(name)), String.trim(value))
         _ -> acc
       end
     end)
+
+    {method, headers}
   end
 
-  defp authorized?(headers, token), do: headers["authorization"] == "Bearer #{token}"
+  defp authorized?(headers, token) do
+    supplied = headers["authorization"] || ""
+    expected = "Bearer #{token}"
+    byte_size(supplied) == byte_size(expected) and Plug.Crypto.secure_compare(supplied, expected)
+  end
 
   defp send_response(socket, {status, payload}) do
-    body = Jason.encode!(payload)
-    reason = if status == 200, do: "OK", else: "Error"
+    body = if is_nil(payload), do: "", else: Jason.encode!(payload)
+    reason = if status in [200, 202], do: "OK", else: "Error"
 
     :gen_tcp.send(
       socket,

@@ -40,8 +40,8 @@ defmodule SymphonyElixir.AgentRunner do
       end)
 
     cond do
-      length(labels) > 1 -> {:error, {:ambiguous_model_labels, labels}}
       supported == [] -> {:ok, {:codex, nil}}
+      length(labels) > 1 -> {:error, {:ambiguous_model_labels, labels}}
       is_nil(antigravity_config) -> {:error, {:antigravity_not_configured, hd(supported)}}
       true -> {:ok, {:antigravity, "runtime/" <> String.trim_leading(hd(supported), "model:")}}
     end

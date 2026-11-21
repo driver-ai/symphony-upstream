@@ -6,7 +6,7 @@ defmodule SymphonyElixir.Antigravity.Runner do
   require Logger
   alias SymphonyElixir.Antigravity.McpBridge
   alias SymphonyElixir.Codex.DynamicTool
-  alias SymphonyElixir.Config
+  alias SymphonyElixir.{Config, PathSafety}
 
   @stop_run_message :symphony_stop_run
   @line_bytes 1_048_576
@@ -25,36 +25,53 @@ defmodule SymphonyElixir.Antigravity.Runner do
   def start_session(workspace, issue, model_alias, opts \\ []) do
     settings = Config.settings!().antigravity
     binding = DynamicTool.bind(workspace, issue)
-    context = [issue: issue, workspace: workspace]
+    thread_id = "antigravity-" <> (:crypto.strong_rand_bytes(16) |> Base.url_encode64(padding: false))
+    context = [issue: issue, workspace: workspace, thread_id: thread_id, session_id: thread_id]
 
-    with {:ok, bridge} <- McpBridge.start(binding, Keyword.put(opts, :context, context)),
-         {:ok, config_path, previous_config} <- install_mcp_config(workspace, bridge),
-         {:ok, port} <- start_port(workspace, settings.command, model_alias, binding) do
-      {:ok,
-       %{
-         port: port,
-         bridge: bridge,
-         config_path: config_path,
-         previous_config: previous_config,
-         binding: binding,
-         workspace: workspace,
-         model_alias: model_alias
-       }}
-    else
-      error -> error
+    with {:ok, bridge} <- McpBridge.start(binding, Keyword.put(opts, :context, context)) do
+      case install_mcp_config(workspace, bridge) do
+        {:ok, config_path, previous_config} ->
+          case start_port(workspace, settings.command, model_alias, binding) do
+            {:ok, port} ->
+              {:ok,
+               %{
+                 port: port,
+                 os_pid: port_os_pid(port),
+                 bridge: bridge,
+                 config_path: config_path,
+                 previous_config: previous_config,
+                 binding: binding,
+                 workspace: workspace,
+                 model_alias: model_alias,
+                 thread_id: thread_id
+               }}
+
+            error ->
+              restore_mcp_config(config_path, previous_config)
+              McpBridge.stop(bridge)
+              error
+          end
+
+        error ->
+          McpBridge.stop(bridge)
+          error
+      end
     end
   end
 
   @spec run_turn(session(), String.t(), map(), keyword()) :: {:ok, map()} | {:error, term()}
   def run_turn(%{port: port} = session, prompt, issue, opts \\ []) do
     on_message = Keyword.get(opts, :on_message, fn _ -> :ok end)
+    turn_id = :erlang.unique_integer([:positive]) |> Integer.to_string()
+    session_id = "#{session.thread_id}-#{turn_id}"
+    emit(on_message, :session_started, %{}, session_id, %{}, session.model_alias)
     send_json(port, %{"type" => "user", "message" => %{"role" => "user", "content" => prompt}})
-    await_turn(session, issue, on_message, "", nil, nil)
+    await_turn(session, issue, on_message, "", session_id, nil)
   end
 
   @spec stop_session(session()) :: :ok
   def stop_session(session) do
-    if is_port(session.port) and not is_nil(Port.info(session.port)), do: Port.close(session.port)
+    terminate_port(session)
     McpBridge.stop(session.bridge)
     restore_mcp_config(session.config_path, session.previous_config)
     :ok
@@ -64,15 +81,16 @@ defmodule SymphonyElixir.Antigravity.Runner do
     executable = System.find_executable("bash")
 
     if executable do
-      args = "#{command} --print --input-format stream-json --output-format stream-json --model #{shell_escape(model_alias)} --sandbox --dangerously-skip-permissions"
       secret_env = valid_environment_names(binding.secret_environment_names)
+      unset = if secret_env == [], do: "", else: "unset #{Enum.join(secret_env, " ")} && "
+      args = "#{unset}exec #{command} --print --input-format stream-json --output-format stream-json --model #{shell_escape(model_alias)} --sandbox --dangerously-skip-permissions"
 
       port =
         Port.open({:spawn_executable, String.to_charlist(executable)}, [
           :binary,
           :exit_status,
           :stderr_to_stdout,
-          args: [~c"-lc", String.to_charlist("exec " <> args)],
+          args: [~c"-lc", String.to_charlist(args)],
           cd: String.to_charlist(workspace),
           env:
             Enum.map(secret_env, &{String.to_charlist(&1), false}) ++
@@ -98,10 +116,12 @@ defmodule SymphonyElixir.Antigravity.Runner do
         {:error, {:port_exit, status}}
 
       {@stop_run_message, reason} ->
-        Port.close(session.port)
+        terminate_port(session)
         {:ok, %{result: :stopped, stopped: reason, session_id: conversation_id}}
     after
-      Config.settings!().antigravity.stall_timeout_ms -> {:error, :turn_timeout}
+      Config.settings!().antigravity.stall_timeout_ms ->
+        terminate_port(session)
+        {:error, :turn_timeout}
     end
   end
 
@@ -109,7 +129,7 @@ defmodule SymphonyElixir.Antigravity.Runner do
     case Jason.decode(line) do
       {:ok, payload} ->
         next_id = payload["conversation_id"] || payload["session_id"] || conversation_id
-        next_usage = payload["usage"] || usage
+        next_usage = cumulative_usage(session.thread_id, payload["usage"] || usage)
         event = if terminal?(payload), do: :turn_completed, else: :notification
         emit(on_message, event, payload, next_id, next_usage, session.model_alias)
 
@@ -129,10 +149,12 @@ defmodule SymphonyElixir.Antigravity.Runner do
     do: payload["type"] in ["result", "turn_completed", "turn/completed"] or payload["done"] == true
 
   defp emit(on_message, event, payload, conversation_id, usage, model_alias) do
+    token_payload = Map.put(payload, "tokenUsage", %{"total" => usage})
+
     on_message.(%{
       event: event,
       timestamp: DateTime.utc_now(),
-      payload: payload,
+      payload: token_payload,
       session_id: conversation_id,
       conversation_id: conversation_id,
       usage: usage,
@@ -144,37 +166,127 @@ defmodule SymphonyElixir.Antigravity.Runner do
   defp install_mcp_config(workspace, bridge) do
     path = Path.join([workspace, ".agents", "mcp_config.json"])
 
-    previous =
-      case File.read(path) do
-        {:ok, data} -> {:ok, data}
-        _ -> :missing
+    with {:ok, canonical_workspace} <- PathSafety.canonicalize(workspace),
+         :ok <- ensure_safe_config_parent(path, canonical_workspace),
+         :ok <- refuse_symlink(path) do
+      previous =
+        case File.read(path) do
+          {:ok, data} -> {:ok, data}
+          _ -> :missing
+        end
+
+      File.mkdir_p!(Path.dirname(path))
+
+      existing =
+        case previous do
+          {:ok, data} ->
+            case Jason.decode(data) do
+              {:ok, decoded} when is_map(decoded) -> decoded
+              _ -> %{}
+            end
+
+          :missing ->
+            %{}
+        end
+
+      servers =
+        case Map.get(existing, "mcpServers", %{}) do
+          value when is_map(value) -> value
+          _ -> %{}
+        end
+      server = %{"serverUrl" => bridge.url, "headers" => %{"Authorization" => "Bearer #{bridge.token}"}}
+      config = Map.put(existing, "mcpServers", Map.put(servers, "symphony", server))
+
+      case File.write(path, Jason.encode!(config)) do
+        :ok ->
+          File.chmod!(path, 0o600)
+          {:ok, path, previous}
+
+        error ->
+          error
       end
-
-    File.mkdir_p!(Path.dirname(path))
-
-    existing =
-      case previous do
-        {:ok, data} ->
-          case Jason.decode(data) do
-            {:ok, decoded} when is_map(decoded) -> decoded
-            _ -> %{}
-          end
-
-        :missing ->
-          %{}
-      end
-
-    servers = Map.get(existing, "mcpServers", %{})
-    config = Map.put(existing, "mcpServers", Map.put(servers, "symphony", %{"serverUrl" => bridge.url, "headers" => %{"Authorization" => "Bearer #{bridge.token}"}}))
-
-    case File.write(path, Jason.encode!(config)) do
-      :ok -> {:ok, path, previous}
-      error -> error
     end
   end
 
-  defp restore_mcp_config(path, {:ok, data}), do: File.write(path, data)
+  defp restore_mcp_config(path, {:ok, data}) do
+    case refuse_symlink(path) do
+      :ok -> File.write(path, data)
+      error -> error
+    end
+  end
   defp restore_mcp_config(path, :missing), do: File.rm(path)
+
+  defp ensure_safe_config_parent(path, canonical_workspace) do
+    parent = Path.dirname(path)
+
+    case File.lstat(parent) do
+      {:ok, %File.Stat{type: :symlink}} -> {:error, :unsafe_mcp_config_path}
+      _ -> ensure_under_workspace(parent, canonical_workspace)
+    end
+  end
+
+  defp ensure_under_workspace(parent, canonical_workspace) do
+    existing = if File.exists?(parent), do: parent, else: Path.dirname(parent)
+
+    case PathSafety.canonicalize(existing) do
+      {:ok, canonical} ->
+        if canonical == canonical_workspace or String.starts_with?(canonical, canonical_workspace <> "/"),
+          do: :ok,
+          else: {:error, :unsafe_mcp_config_path}
+
+      _ ->
+        {:error, :unsafe_mcp_config_path}
+    end
+  end
+
+  defp refuse_symlink(path) do
+    case File.lstat(path) do
+      {:ok, %File.Stat{type: :symlink}} -> {:error, :unsafe_mcp_config_path}
+      _ -> :ok
+    end
+  end
+
+  defp cumulative_usage(thread_id, nil), do: Process.get({:antigravity_usage, thread_id}, %{})
+
+  defp cumulative_usage(thread_id, usage) when is_map(usage) do
+    current = Process.get({:antigravity_usage, thread_id}, %{})
+
+    total =
+      Map.merge(current, usage, fn _key, left, right ->
+        if is_number(left) and is_number(right), do: left + right, else: right
+      end)
+
+    Process.put({:antigravity_usage, thread_id}, total)
+    total
+  end
+
+  defp port_os_pid(port) do
+    case Port.info(port, :os_pid) do
+      {:os_pid, pid} -> pid
+      _ -> nil
+    end
+  end
+
+  defp terminate_port(%{port: port, os_pid: os_pid}) do
+    if is_nil(Port.info(port)) do
+      :ok
+    else
+      do_terminate_port(port, os_pid)
+    end
+  end
+
+  defp do_terminate_port(port, os_pid) do
+    if is_integer(os_pid),
+      do: System.cmd("kill", ["-TERM", Integer.to_string(os_pid)], stderr_to_stdout: true)
+
+    receive do
+      {^port, {:exit_status, _}} -> :ok
+    after
+      2_000 ->
+        if is_integer(os_pid), do: System.cmd("kill", ["-KILL", Integer.to_string(os_pid)], stderr_to_stdout: true)
+        if is_port(port) and not is_nil(Port.info(port)), do: Port.close(port)
+    end
+  end
 
   defp valid_environment_names(names),
     do: Enum.filter(names, &(is_binary(&1) and String.match?(&1, ~r/^[A-Za-z_][A-Za-z0-9_]*$/)))
