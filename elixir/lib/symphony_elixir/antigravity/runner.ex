@@ -392,17 +392,19 @@ defmodule SymphonyElixir.Antigravity.Runner do
         children =
           output
           |> String.split("\n", trim: true)
-          |> Enum.reduce(%{}, fn line, acc ->
-            case line |> String.split() |> Enum.map(&Integer.parse/1) do
-              [{pid, ""}, {parent, ""}] -> Map.update(acc, parent, [pid], &[pid | &1])
-              _ -> acc
-            end
-          end)
+          |> Enum.reduce(%{}, &add_process_relationship/2)
 
         collect_descendants([root_pid], children, [])
 
       _ ->
         []
+    end
+  end
+
+  defp add_process_relationship(line, acc) do
+    case line |> String.split() |> Enum.map(&Integer.parse/1) do
+      [{pid, ""}, {parent, ""}] -> Map.update(acc, parent, [pid], &[pid | &1])
+      _ -> acc
     end
   end
 
