@@ -149,6 +149,7 @@ defmodule SymphonyElixir.Antigravity.McpBridge do
 
   defp parse_headers(raw) do
     [request_line | lines] = String.split(raw, "\r\n")
+
     method =
       if String.starts_with?(request_line, "POST "),
         do: :post,
