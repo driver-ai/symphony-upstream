@@ -44,13 +44,20 @@ defmodule SymphonyElixir.AgentRunner do
       end)
 
     cond do
-      supported == [] -> {:ok, {:codex, nil}}
-      length(labels) > 1 -> {:error, {:ambiguous_model_labels, labels}}
-      is_nil(antigravity_config) -> {:error, {:antigravity_not_configured, hd(supported)}}
+      supported == [] ->
+        {:ok, {:codex, nil}}
+
+      length(labels) > 1 ->
+        {:error, {:ambiguous_model_labels, labels}}
+
+      is_nil(antigravity_config) ->
+        {:error, {:antigravity_not_configured, hd(supported)}}
+
       review_config.enabled and not antigravity_config.external_sandbox_attested ->
         {:error, :antigravity_external_sandbox_not_attested}
 
-      true -> {:ok, {:antigravity, "runtime/" <> String.trim_leading(hd(supported), "model:")}}
+      true ->
+        {:ok, {:antigravity, "runtime/" <> String.trim_leading(hd(supported), "model:")}}
     end
   end
 

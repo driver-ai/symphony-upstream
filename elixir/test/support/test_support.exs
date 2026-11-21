@@ -161,8 +161,10 @@ defmodule SymphonyElixir.TestSupport do
     codex_stop_timeout_ms = Keyword.get(config, :codex_stop_timeout_ms)
     antigravity_command = Keyword.get(config, :antigravity_command)
     antigravity_stall_timeout_ms = Keyword.get(config, :antigravity_stall_timeout_ms)
+
     antigravity_external_sandbox_attested =
       Keyword.get(config, :antigravity_external_sandbox_attested)
+
     hook_after_create = Keyword.get(config, :hook_after_create)
     hook_before_run = Keyword.get(config, :hook_before_run)
     hook_after_run = Keyword.get(config, :hook_after_run)
