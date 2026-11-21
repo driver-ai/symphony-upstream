@@ -77,16 +77,16 @@ defmodule SymphonyElixir.Antigravity.PeerAuth do
     end
   end
 
-  defp descendant?(pid, root_pid), do: descendant?(pid, root_pid, MapSet.new())
+  defp descendant?(pid, root_pid), do: descendant?(pid, root_pid, [])
 
-  @spec descendant?(integer(), integer(), MapSet.t(integer())) :: boolean()
+  @spec descendant?(integer(), integer(), [integer()]) :: boolean()
   defp descendant?(pid, root_pid, seen) when pid > 1 do
-    if MapSet.member?(seen, pid) do
+    if pid in seen do
       false
     else
       case parent_pid(pid) do
         ^root_pid -> true
-        parent when is_integer(parent) -> descendant?(parent, root_pid, MapSet.put(seen, pid))
+        parent when is_integer(parent) -> descendant?(parent, root_pid, [pid | seen])
         _ -> false
       end
     end
