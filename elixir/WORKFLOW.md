@@ -43,6 +43,9 @@ codex:
 # antigravity:
 #   command: agy
 #   stall_timeout_ms: 300000
+#   # Required for Antigravity routing when review.enabled is true. This attests that command
+#   # applies OS-level confinement outside the issue workspace; see elixir/README.md.
+#   external_sandbox_attested: false
 # Optional runtime-owned review execution gate. Enabling requires a local Linear worker and
 # installed paths outside every worker-writable root; see docs/review-runner.md.
 review:

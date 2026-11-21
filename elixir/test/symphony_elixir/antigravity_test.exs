@@ -13,9 +13,15 @@ defmodule SymphonyElixir.AntigravityTest do
 
     assert settings.antigravity.command == "agy"
     assert settings.antigravity.stall_timeout_ms == 12_345
+    refute settings.antigravity.external_sandbox_attested
 
-    assert {:ok, settings} = Schema.parse(%{"antigravity" => %{"command" => "agy"}})
+    assert {:ok, settings} =
+             Schema.parse(%{
+               "antigravity" => %{"command" => "agy", "external_sandbox_attested" => true}
+             })
+
     assert settings.antigravity.stall_timeout_ms == 300_000
+    assert settings.antigravity.external_sandbox_attested
 
     assert {:error, {:invalid_workflow_config, missing_message}} =
              Schema.parse(%{"antigravity" => %{}})
@@ -32,34 +38,73 @@ defmodule SymphonyElixir.AntigravityTest do
 
     assert message =~ "command"
     assert message =~ "stall_timeout_ms"
+
+    assert {:error, {:invalid_workflow_config, boolean_message}} =
+             Schema.parse(%{
+               "antigravity" => %{
+                 "command" => "agy",
+                 "external_sandbox_attested" => "not-a-boolean"
+               }
+             })
+
+    assert boolean_message =~ "external_sandbox_attested"
   end
 
   test "model labels select the exact harness or return explicit routing errors" do
-    config = %{command: "agy"}
+    config = %{command: "agy", external_sandbox_attested: false}
+    review_disabled = %{enabled: false}
     issue = %Issue{labels: []}
-    assert {:ok, {:codex, nil}} = AgentRunner.harness_for_issue(issue, config)
+    assert {:ok, {:codex, nil}} = AgentRunner.harness_for_issue(issue, config, review_disabled)
 
     for variant <- ~w(neon argon carbon hydrogen) do
       issue = %Issue{labels: ["model:gemini-4-#{variant}"]}
       expected_model = "runtime/gemini-4-#{variant}"
 
       assert {:ok, {:antigravity, ^expected_model}} =
-               AgentRunner.harness_for_issue(issue, config)
+               AgentRunner.harness_for_issue(issue, config, review_disabled)
     end
 
     assert {:error, {:antigravity_not_configured, "model:gemini-4-neon"}} =
-             AgentRunner.harness_for_issue(%Issue{labels: ["model:gemini-4-neon"]}, nil)
+             AgentRunner.harness_for_issue(
+               %Issue{labels: ["model:gemini-4-neon"]},
+               nil,
+               review_disabled
+             )
 
     assert {:error, {:ambiguous_model_labels, labels}} =
              AgentRunner.harness_for_issue(
                %Issue{labels: ["model:gemini-4-neon", "model:gemini-4-argon"]},
-               config
+               config,
+               review_disabled
              )
 
     assert length(labels) == 2
 
     assert {:ok, {:codex, nil}} =
-             AgentRunner.harness_for_issue(%Issue{labels: ["model:foo", "model:bar"]}, nil)
+             AgentRunner.harness_for_issue(
+               %Issue{labels: ["model:foo", "model:bar"]},
+               nil,
+               review_disabled
+             )
+  end
+
+  test "review-enabled Antigravity routing requires external sandbox attestation" do
+    issue = %Issue{labels: ["model:gemini-4-neon"]}
+    review = %{enabled: true}
+
+    assert {:error, :antigravity_external_sandbox_not_attested} =
+             AgentRunner.harness_for_issue(
+               issue,
+               %{command: "agy", external_sandbox_attested: false},
+               review
+             )
+
+    assert {:ok, {:antigravity, "runtime/gemini-4-neon"}} =
+             AgentRunner.harness_for_issue(
+               issue,
+               %{command: "agy", external_sandbox_attested: true},
+               review
+             )
   end
 
   test "MCP bridge exposes bound tools and delegates calls through the supplied executor" do

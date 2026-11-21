@@ -20,9 +20,13 @@ defmodule SymphonyElixir.AgentRunner do
   end
 
   @doc false
-  @spec harness_for_issue(Issue.t(), map() | nil) ::
+  @spec harness_for_issue(Issue.t(), map() | nil, map()) ::
           {:ok, {:codex, nil}} | {:ok, {:antigravity, String.t()}} | {:error, term()}
-  def harness_for_issue(%Issue{} = issue, antigravity_config \\ Config.settings!().antigravity) do
+  def harness_for_issue(
+        %Issue{} = issue,
+        antigravity_config \\ Config.settings!().antigravity,
+        review_config \\ Config.settings!().review
+      ) do
     labels =
       issue
       |> Issue.label_names()
@@ -43,6 +47,9 @@ defmodule SymphonyElixir.AgentRunner do
       supported == [] -> {:ok, {:codex, nil}}
       length(labels) > 1 -> {:error, {:ambiguous_model_labels, labels}}
       is_nil(antigravity_config) -> {:error, {:antigravity_not_configured, hd(supported)}}
+      review_config.enabled and not antigravity_config.external_sandbox_attested ->
+        {:error, :antigravity_external_sandbox_not_attested}
+
       true -> {:ok, {:antigravity, "runtime/" <> String.trim_leading(hd(supported), "model:")}}
     end
   end

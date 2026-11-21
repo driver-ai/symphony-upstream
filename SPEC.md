@@ -708,9 +708,13 @@ Important nuance:
 - A single supported `model:gemini-4-*` label MAY select the optional Antigravity harness. A
   supported label combined with another `model:*` label, or without Antigravity configuration,
   MUST fail explicitly. Unrelated model labels remain on the Codex path.
-- The extension accepts `antigravity.command` (a required non-empty shell command) and
-  `antigravity.stall_timeout_ms` (a positive integer, default `300000`). When `antigravity` is
-  absent, every issue uses Codex.
+- The extension accepts `antigravity.command` (a required non-empty shell command),
+  `antigravity.stall_timeout_ms` (a positive integer, default `300000`), and
+  `antigravity.external_sandbox_attested` (a boolean, default `false`). When review is enabled,
+  Antigravity routing MUST fail closed unless the attestation is true. A true value is the
+  operator's assertion that `antigravity.command` applies OS-level filesystem confinement so the
+  worker cannot access `review.state_root` or paths outside the issue workspace, including when
+  Antigravity permission checks are skipped. When `antigravity` is absent, every issue uses Codex.
 - The first turn SHOULD use the full rendered task prompt.
 - Continuation turns SHOULD send only continuation guidance to the existing thread, not resend the
   original task prompt that is already present in thread history.

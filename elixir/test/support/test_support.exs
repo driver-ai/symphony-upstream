@@ -118,6 +118,7 @@ defmodule SymphonyElixir.TestSupport do
           codex_stop_timeout_ms: 60_000,
           antigravity_command: nil,
           antigravity_stall_timeout_ms: nil,
+          antigravity_external_sandbox_attested: nil,
           hook_after_create: nil,
           hook_before_run: nil,
           hook_after_run: nil,
@@ -160,6 +161,8 @@ defmodule SymphonyElixir.TestSupport do
     codex_stop_timeout_ms = Keyword.get(config, :codex_stop_timeout_ms)
     antigravity_command = Keyword.get(config, :antigravity_command)
     antigravity_stall_timeout_ms = Keyword.get(config, :antigravity_stall_timeout_ms)
+    antigravity_external_sandbox_attested =
+      Keyword.get(config, :antigravity_external_sandbox_attested)
     hook_after_create = Keyword.get(config, :hook_after_create)
     hook_before_run = Keyword.get(config, :hook_before_run)
     hook_after_run = Keyword.get(config, :hook_after_run)
@@ -204,7 +207,11 @@ defmodule SymphonyElixir.TestSupport do
         "  read_timeout_ms: #{yaml_value(codex_read_timeout_ms)}",
         "  stall_timeout_ms: #{yaml_value(codex_stall_timeout_ms)}",
         "  stop_timeout_ms: #{yaml_value(codex_stop_timeout_ms)}",
-        antigravity_yaml(antigravity_command, antigravity_stall_timeout_ms),
+        antigravity_yaml(
+          antigravity_command,
+          antigravity_stall_timeout_ms,
+          antigravity_external_sandbox_attested
+        ),
         hooks_yaml(hook_after_create, hook_before_run, hook_after_run, hook_before_remove, hook_timeout_ms),
         observability_yaml(observability_enabled, observability_refresh_ms, observability_render_interval_ms),
         server_yaml(server_port, server_host),
@@ -238,13 +245,14 @@ defmodule SymphonyElixir.TestSupport do
 
   defp yaml_value(value), do: yaml_value(to_string(value))
 
-  defp antigravity_yaml(nil, nil), do: nil
+  defp antigravity_yaml(nil, nil, nil), do: nil
 
-  defp antigravity_yaml(command, stall_timeout_ms) do
+  defp antigravity_yaml(command, stall_timeout_ms, external_sandbox_attested) do
     [
       "antigravity:",
       "  command: #{yaml_value(command)}",
-      "  stall_timeout_ms: #{yaml_value(stall_timeout_ms)}"
+      "  stall_timeout_ms: #{yaml_value(stall_timeout_ms)}",
+      "  external_sandbox_attested: #{yaml_value(external_sandbox_attested)}"
     ]
     |> Enum.join("\n")
   end

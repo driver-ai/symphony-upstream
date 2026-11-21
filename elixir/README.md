@@ -141,6 +141,7 @@ codex:
 # antigravity:
 #   command: agy
 #   stall_timeout_ms: 300000
+#   external_sandbox_attested: false
 # Optional; local Linear workers only. Paths must be installed and outside worker-writable roots.
 review:
   enabled: false
@@ -201,6 +202,13 @@ Notes:
   `codex.stall_timeout_ms` remains the outer inactivity limit for every harness, so configure it
   above the Antigravity timeout to allow runner cleanup. The headless launch uses agy's documented
   workspace sandbox with permission prompts disabled.
+- When `review.enabled` is true, Antigravity routing fails closed unless
+  `antigravity.external_sandbox_attested` is explicitly true. Setting it is an operator attestation
+  that `antigravity.command` enforces OS-level filesystem confinement (for example, a host
+  `bubblewrap` launcher) that prevents `agy`, including when permissions are skipped, from reading
+  or changing `review.state_root` or any path outside the issue workspace. The runtime does not
+  verify or create that host boundary. Review-disabled Antigravity runs do not require the
+  attestation.
 - If the Markdown body is blank, Symphony uses a default prompt template that includes the issue
   identifier, title, and body.
 - Use `hooks.after_create` to bootstrap a fresh workspace. For a Git-backed repo, you can run
