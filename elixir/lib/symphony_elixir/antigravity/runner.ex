@@ -329,12 +329,14 @@ defmodule SymphonyElixir.Antigravity.Runner do
   end
 
   defp do_terminate_port(port, os_pid) do
+    descendants = if is_integer(os_pid), do: descendant_pids(os_pid), else: []
     terminate_process_tree(os_pid, "-TERM")
 
     receive do
-      {^port, {:exit_status, _}} -> :ok
+      {^port, {:exit_status, _}} -> terminate_pids(descendants, "-KILL")
     after
       2_000 ->
+        terminate_pids(descendants, "-KILL")
         terminate_process_tree(os_pid, "-KILL")
         if port in Port.list(), do: Port.close(port)
     end
@@ -352,6 +354,12 @@ defmodule SymphonyElixir.Antigravity.Runner do
   end
 
   defp terminate_process_tree(_os_pid, _signal), do: :ok
+
+  defp terminate_pids([], _signal), do: :ok
+
+  defp terminate_pids(pids, signal) do
+    System.cmd("kill", [signal, "--" | Enum.map(pids, &Integer.to_string/1)], stderr_to_stdout: true)
+  end
 
   defp descendant_pids(root_pid) do
     {output, _status} = System.cmd("ps", ["-eo", "pid=,ppid="], stderr_to_stdout: true)
