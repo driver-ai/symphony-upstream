@@ -191,6 +191,9 @@ Notes:
   server for Symphony's bound tools. Tracker secret environment variables are removed from the
   child. Before/after hooks receive `SYMPHONY_HARNESS` and, for Antigravity,
   `SYMPHONY_MODEL_ALIAS`.
+- The workspace `.agents/mcp_config.json` location and Streamable HTTP `serverUrl`/`headers` shape
+  follow the Antigravity MCP contract documented at https://www.agy.dev/docs/mcp/. The runner uses
+  the CLI's documented `--print --input-format stream-json --output-format stream-json` interface.
 - Antigravity currently supports local workers only. `stall_timeout_ms` is the maximum silence
   interval while an Antigravity turn streams, not a total turn deadline. The orchestrator's
   `codex.stall_timeout_ms` remains the outer inactivity limit for every harness, so configure it

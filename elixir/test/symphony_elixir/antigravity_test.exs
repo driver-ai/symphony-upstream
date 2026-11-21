@@ -14,6 +14,19 @@ defmodule SymphonyElixir.AntigravityTest do
     assert settings.antigravity.command == "agy"
     assert settings.antigravity.stall_timeout_ms == 12_345
 
+    assert {:ok, settings} = Schema.parse(%{"antigravity" => %{"command" => "agy"}})
+    assert settings.antigravity.stall_timeout_ms == 300_000
+
+    assert {:error, {:invalid_workflow_config, missing_message}} =
+             Schema.parse(%{"antigravity" => %{}})
+
+    assert missing_message =~ "command"
+
+    assert {:error, {:invalid_workflow_config, null_message}} =
+             Schema.parse(%{"antigravity" => %{"command" => "agy", "stall_timeout_ms" => nil}})
+
+    assert null_message =~ "stall_timeout_ms"
+
     assert {:error, {:invalid_workflow_config, message}} =
              Schema.parse(%{"antigravity" => %{"command" => "  ", "stall_timeout_ms" => 0}})
 
@@ -154,6 +167,19 @@ defmodule SymphonyElixir.AntigravityTest do
       max_turns: 2
     )
 
+    config_path = Path.join([workspace_root, "AGY-1", ".agents", "mcp_config.json"])
+    File.mkdir_p!(Path.dirname(config_path))
+
+    File.write!(
+      config_path,
+      Jason.encode!(%{
+        "mcpServers" => %{
+          "custom" => %{"serverUrl" => "http://example.invalid"},
+          "symphony" => %{"serverUrl" => "http://127.0.0.1:1/stale"}
+        }
+      })
+    )
+
     issue = %Issue{
       id: "agy-issue",
       identifier: "AGY-1",
@@ -180,7 +206,9 @@ defmodule SymphonyElixir.AntigravityTest do
     assert contents =~ "SECRET:unset"
     assert contents =~ "MODEL:runtime/gemini-4-neon"
     assert length(Regex.scan(~r/^INPUT:/m, contents)) == 2
-    refute File.exists?(Path.join([workspace_root, "AGY-1", ".agents", "mcp_config.json"]))
+    assert %{"mcpServers" => restored_servers} = config_path |> File.read!() |> Jason.decode!()
+    assert Map.has_key?(restored_servers, "custom")
+    refute Map.has_key?(restored_servers, "symphony")
 
     assert File.read!(Path.join([workspace_root, "AGY-1", "hook-env"])) ==
              "antigravity:runtime/gemini-4-neon"

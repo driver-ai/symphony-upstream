@@ -198,14 +198,9 @@ defmodule SymphonyElixir.Antigravity.Runner do
     server = %{"serverUrl" => bridge.url, "headers" => %{"Authorization" => "Bearer #{bridge.token}"}}
     config = Map.put(existing, "mcpServers", Map.put(servers, "symphony", server))
 
-    temporary =
-      Path.join(
-        System.tmp_dir!(),
-        "symphony-mcp-#{:crypto.strong_rand_bytes(24) |> Base.url_encode64(padding: false)}"
-      )
+    temporary = temporary_config_path(path)
 
-    with :ok <- File.write(temporary, Jason.encode!(config)),
-         :ok <- File.chmod(temporary, 0o600),
+    with :ok <- write_private_file(temporary, Jason.encode!(config)),
          :ok <- File.rename(temporary, path) do
       {:ok, path, {:mcp_state, previous, parent_identity}}
     else
@@ -217,8 +212,37 @@ defmodule SymphonyElixir.Antigravity.Runner do
 
   defp read_previous_config(path) do
     case File.read(path) do
-      {:ok, data} -> {:ok, data}
+      {:ok, data} -> {:ok, remove_stale_symphony_server(data)}
       _ -> :missing
+    end
+  end
+
+  defp remove_stale_symphony_server(data) do
+    with {:ok, config} when is_map(config) <- Jason.decode(data),
+         servers when is_map(servers) <- config["mcpServers"],
+         true <- Map.has_key?(servers, "symphony") do
+      config |> Map.put("mcpServers", Map.delete(servers, "symphony")) |> Jason.encode!()
+    else
+      _ -> data
+    end
+  end
+
+  defp temporary_config_path(path) do
+    suffix = :crypto.strong_rand_bytes(24) |> Base.url_encode64(padding: false)
+    Path.join(Path.dirname(path), ".symphony-mcp-#{suffix}")
+  end
+
+  defp write_private_file(path, contents) do
+    case File.open(path, [:write, :exclusive]) do
+      {:ok, io} ->
+        try do
+          with :ok <- File.chmod(path, 0o600), do: IO.binwrite(io, contents)
+        after
+          File.close(io)
+        end
+
+      error ->
+        error
     end
   end
 

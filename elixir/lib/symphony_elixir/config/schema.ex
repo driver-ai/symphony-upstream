@@ -316,7 +316,7 @@ defmodule SymphonyElixir.Config.Schema do
     def changeset(schema, attrs) do
       schema
       |> cast(attrs, [:command, :stall_timeout_ms], empty_values: [])
-      |> validate_required([:command])
+      |> validate_required([:command, :stall_timeout_ms])
       |> validate_change(:command, fn :command, command ->
         if String.trim(command) == "", do: [command: "can't be blank"], else: []
       end)
