@@ -87,29 +87,27 @@ defmodule SymphonyElixir.Antigravity.McpBridge do
   end
 
   defp serve(socket, token, binding, opts) do
-    try do
-      response =
-        with {:ok, request} <- read_request(socket, token),
-             :post <- request.method,
-             {:ok, payload} when is_map(payload) <- Jason.decode(request.body) do
-          if payload["method"] == "notifications/initialized" do
-            {202, nil}
-          else
-            {200, dispatch(payload, binding, opts)}
-          end
+    response =
+      with {:ok, request} <- read_request(socket, token),
+           :post <- request.method,
+           {:ok, payload} when is_map(payload) <- Jason.decode(request.body) do
+        if payload["method"] == "notifications/initialized" do
+          {202, nil}
         else
-          {:error, :unauthorized} -> {401, %{"error" => "unauthorized"}}
-          {:error, :too_large} -> {413, %{"error" => "request too large"}}
-          method when method in [:get, :other] -> {405, %{"error" => "method not allowed"}}
-          _ -> {400, %{"error" => "invalid request"}}
+          {200, dispatch(payload, binding, opts)}
         end
+      else
+        {:error, :unauthorized} -> {401, %{"error" => "unauthorized"}}
+        {:error, :too_large} -> {413, %{"error" => "request too large"}}
+        method when method in [:get, :other] -> {405, %{"error" => "method not allowed"}}
+        _ -> {400, %{"error" => "invalid request"}}
+      end
 
-      send_response(socket, response)
-    rescue
-      _ -> send_response(socket, {400, %{"error" => "invalid request"}})
-    after
-      :gen_tcp.close(socket)
-    end
+    send_response(socket, response)
+  rescue
+    _ -> send_response(socket, {400, %{"error" => "invalid request"}})
+  after
+    :gen_tcp.close(socket)
   end
 
   defp read_request(socket, token), do: read_request(socket, token, "")
