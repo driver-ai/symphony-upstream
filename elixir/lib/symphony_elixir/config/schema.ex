@@ -321,12 +321,6 @@ defmodule SymphonyElixir.Config.Schema do
         if String.trim(command) == "", do: [command: "can't be blank"], else: []
       end)
       |> validate_number(:stall_timeout_ms, greater_than: 0)
-      |> reject_null_timeout(attrs)
-    end
-
-    defp reject_null_timeout(changeset, attrs) do
-      value = Map.get(attrs, "stall_timeout_ms", Map.get(attrs, :stall_timeout_ms, :missing))
-      if is_nil(value), do: add_error(changeset, :stall_timeout_ms, "can't be null"), else: changeset
     end
   end
 

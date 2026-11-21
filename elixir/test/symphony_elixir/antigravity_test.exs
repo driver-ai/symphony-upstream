@@ -22,10 +22,10 @@ defmodule SymphonyElixir.AntigravityTest do
 
     assert missing_message =~ "command"
 
-    assert {:error, {:invalid_workflow_config, null_message}} =
+    assert {:ok, settings} =
              Schema.parse(%{"antigravity" => %{"command" => "agy", "stall_timeout_ms" => nil}})
 
-    assert null_message =~ "stall_timeout_ms"
+    assert settings.antigravity.stall_timeout_ms == 300_000
 
     assert {:error, {:invalid_workflow_config, message}} =
              Schema.parse(%{"antigravity" => %{"command" => "  ", "stall_timeout_ms" => 0}})
