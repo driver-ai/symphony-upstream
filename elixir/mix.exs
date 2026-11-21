@@ -23,6 +23,7 @@ defmodule SymphonyElixir.MixProject do
           SymphonyElixir.Orchestrator.State,
           SymphonyElixir.AgentRunner,
           SymphonyElixir.Antigravity.McpBridge,
+          SymphonyElixir.Antigravity.PeerAuth,
           SymphonyElixir.Antigravity.Runner,
           SymphonyElixir.Application,
           SymphonyElixir.CLI,

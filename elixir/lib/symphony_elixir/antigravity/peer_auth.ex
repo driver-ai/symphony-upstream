@@ -35,7 +35,7 @@ defmodule SymphonyElixir.Antigravity.PeerAuth do
   defp matching_inode(line, local_port, peer_port) do
     case String.split(line) do
       [_slot, local, remote, "01" | fields] ->
-        if endpoint_port(local) == local_port and endpoint_port(remote) == peer_port, do: Enum.at(fields, 6)
+        if endpoint_port(local) == local_port and endpoint_port(remote) == peer_port, do: Enum.at(fields, 5)
 
       _ ->
         nil
