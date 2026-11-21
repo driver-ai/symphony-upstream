@@ -143,7 +143,13 @@ defmodule SymphonyElixir.Antigravity.Runner do
 
   defp install_mcp_config(workspace, bridge) do
     path = Path.join([workspace, ".agents", "mcp_config.json"])
-    previous = case File.read(path) do {:ok, data} -> {:ok, data}; _ -> :missing end
+
+    previous =
+      case File.read(path) do
+        {:ok, data} -> {:ok, data}
+        _ -> :missing
+      end
+
     File.mkdir_p!(Path.dirname(path))
 
     existing =
@@ -157,6 +163,7 @@ defmodule SymphonyElixir.Antigravity.Runner do
         :missing ->
           %{}
       end
+
     servers = Map.get(existing, "mcpServers", %{})
     config = Map.put(existing, "mcpServers", Map.put(servers, "symphony", %{"serverUrl" => bridge.url, "headers" => %{"Authorization" => "Bearer #{bridge.token}"}}))
 
