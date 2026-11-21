@@ -97,6 +97,25 @@ defmodule SymphonyElixir.AntigravityTest do
       assert get_in(response, ["result", "isError"]) == false
       assert_receive {:executed, ^name, ^arguments, ^binding, [session_id: "agy-session"]}
     end
+
+    assert %{"error" => %{"code" => -32_601}} =
+             McpBridge.dispatch(
+               %{"jsonrpc" => "2.0", "id" => 9, "method" => "tools/call", "params" => []},
+               binding,
+               tool_executor: executor
+             )
+
+    assert %{"result" => %{"isError" => true}} =
+             McpBridge.dispatch(
+               %{
+                 "jsonrpc" => "2.0",
+                 "id" => 10,
+                 "method" => "tools/call",
+                 "params" => %{"name" => "linear_transition", "arguments" => %{}}
+               },
+               binding,
+               tool_executor: fn _name, _arguments, _binding, _context -> raise "tool failed" end
+             )
   end
 
   test "MCP bridge enforces bearer authentication over loopback HTTP" do
@@ -266,6 +285,7 @@ defmodule SymphonyElixir.AntigravityTest do
     assert :ok = AgentRunner.request_stop(task.pid, :issue_inactive)
     assert :ok = Task.await(task, 5_000)
     assert File.exists?(after_run)
+    refute File.exists?(Path.join([workspace_root, "AGY-STOP", ".agents", "mcp_config.json"]))
     pid = File.read!(pid_file) |> String.trim()
     child_pid = File.read!(child_pid_file) |> String.trim()
 

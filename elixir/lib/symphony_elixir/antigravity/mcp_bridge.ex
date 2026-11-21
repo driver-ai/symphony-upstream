@@ -56,10 +56,10 @@ defmodule SymphonyElixir.Antigravity.McpBridge do
     result(id, %{"tools" => tools})
   end
 
-  def dispatch(%{"method" => "tools/call", "id" => id, "params" => params}, binding, opts) do
+  def dispatch(%{"method" => "tools/call", "id" => id, "params" => params}, binding, opts) when is_map(params) do
     executor = Keyword.get(opts, :tool_executor, &DynamicTool.execute/4)
     context = Keyword.get(opts, :context, [])
-    response = executor.(params["name"], params["arguments"] || %{}, binding, context)
+    response = execute_tool(executor, params, binding, context)
 
     result(id, %{
       "content" => [%{"type" => "text", "text" => Jason.encode!(response)}],
@@ -73,6 +73,14 @@ defmodule SymphonyElixir.Antigravity.McpBridge do
   def dispatch(_request, _binding, _opts), do: %{}
 
   defp result(id, value), do: %{"jsonrpc" => "2.0", "id" => id, "result" => value}
+
+  defp execute_tool(executor, params, binding, context) do
+    executor.(params["name"], params["arguments"] || %{}, binding, context)
+  rescue
+    error -> %{"success" => false, "error" => Exception.message(error)}
+  catch
+    kind, reason -> %{"success" => false, "error" => Exception.format(kind, reason, [])}
+  end
 
   defp accept_loop(listener, owner, token, binding, executor, opts, children) do
     children = reap_children(children)
