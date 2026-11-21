@@ -95,7 +95,7 @@ defmodule SymphonyElixir.Antigravity.Runner do
     if executable do
       secret_env = valid_environment_names(binding.secret_environment_names)
       unset = if secret_env == [], do: "", else: "unset #{Enum.join(secret_env, " ")} && "
-      args = "#{unset}exec setsid #{command} --print --input-format stream-json --output-format stream-json --model #{shell_escape(model_alias)} --sandbox --dangerously-skip-permissions"
+      args = "#{unset}exec #{command} --print --input-format stream-json --output-format stream-json --model #{shell_escape(model_alias)} --sandbox --dangerously-skip-permissions"
 
       port =
         Port.open({:spawn_executable, String.to_charlist(executable)}, [
@@ -329,59 +329,16 @@ defmodule SymphonyElixir.Antigravity.Runner do
   end
 
   defp do_terminate_port(port, os_pid) do
-    descendants = if is_integer(os_pid), do: descendant_pids(os_pid), else: []
-    terminate_process_tree(os_pid, "-TERM")
+    if is_integer(os_pid),
+      do: System.cmd("kill", ["-TERM", Integer.to_string(os_pid)], stderr_to_stdout: true)
 
     receive do
-      {^port, {:exit_status, _}} -> terminate_pids(descendants, "-KILL")
+      {^port, {:exit_status, _}} -> :ok
     after
       2_000 ->
-        terminate_pids(descendants, "-KILL")
-        terminate_process_tree(os_pid, "-KILL")
+        if is_integer(os_pid), do: System.cmd("kill", ["-KILL", Integer.to_string(os_pid)], stderr_to_stdout: true)
         if port in Port.list(), do: Port.close(port)
     end
-  end
-
-  defp terminate_process_tree(os_pid, signal) when is_integer(os_pid) do
-    descendants = descendant_pids(os_pid)
-
-    if descendants != [] do
-      System.cmd("kill", [signal, "--" | Enum.map(descendants, &Integer.to_string/1)], stderr_to_stdout: true)
-      Process.sleep(50)
-    end
-
-    System.cmd("kill", [signal, "--", Integer.to_string(os_pid)], stderr_to_stdout: true)
-  end
-
-  defp terminate_process_tree(_os_pid, _signal), do: :ok
-
-  defp terminate_pids([], _signal), do: :ok
-
-  defp terminate_pids(pids, signal) do
-    System.cmd("kill", [signal, "--" | Enum.map(pids, &Integer.to_string/1)], stderr_to_stdout: true)
-  end
-
-  defp descendant_pids(root_pid) do
-    {output, _status} = System.cmd("ps", ["-eo", "pid=,ppid="], stderr_to_stdout: true)
-
-    children =
-      output
-      |> String.split("\n", trim: true)
-      |> Enum.flat_map(fn line ->
-        case line |> String.split() |> Enum.map(&Integer.parse/1) do
-          [{pid, ""}, {parent, ""}] -> [{pid, parent}]
-          _ -> []
-        end
-      end)
-
-    collect_descendants([root_pid], children, [])
-  end
-
-  defp collect_descendants([], _children, found), do: found
-
-  defp collect_descendants(parents, children, found) do
-    next = for {pid, parent} <- children, parent in parents, pid not in found, do: pid
-    collect_descendants(next, children, next ++ found)
   end
 
   defp valid_environment_names(names),
