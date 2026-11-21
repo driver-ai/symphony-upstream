@@ -61,21 +61,26 @@ defmodule SymphonyElixir.AntigravityTest do
       %{"success" => true, "name" => name}
     end
 
-    response =
-      McpBridge.dispatch(
-        %{
-          "jsonrpc" => "2.0",
-          "id" => 7,
-          "method" => "tools/call",
-          "params" => %{"name" => "linear_transition", "arguments" => %{"state_id" => "review"}}
-        },
-        binding,
-        tool_executor: executor,
-        context: [session_id: "agy-session"]
-      )
+    for {id, name, arguments} <- [
+          {7, "linear_transition", %{"state_id" => "review"}},
+          {8, "symphony_review", %{"operation" => "start"}}
+        ] do
+      response =
+        McpBridge.dispatch(
+          %{
+            "jsonrpc" => "2.0",
+            "id" => id,
+            "method" => "tools/call",
+            "params" => %{"name" => name, "arguments" => arguments}
+          },
+          binding,
+          tool_executor: executor,
+          context: [session_id: "agy-session"]
+        )
 
-    assert get_in(response, ["result", "isError"]) == false
-    assert_receive {:executed, "linear_transition", %{"state_id" => "review"}, ^binding, [session_id: "agy-session"]}
+      assert get_in(response, ["result", "isError"]) == false
+      assert_receive {:executed, ^name, ^arguments, ^binding, [session_id: "agy-session"]}
+    end
   end
 
   test "fake agy streams multiple turns, reports usage, isolates secrets, and exposes hook routing" do
@@ -145,5 +150,58 @@ defmodule SymphonyElixir.AntigravityTest do
              "antigravity:runtime/gemini-4-neon"
 
     assert_receive {:codex_worker_update, "agy-issue", %{conversation_id: "conversation-1", usage: %{"input_tokens" => 1}}}
+  end
+
+  test "graceful stop terminates fake agy and still runs after_run" do
+    root = Path.join(System.tmp_dir!(), "symphony-antigravity-stop-#{System.unique_integer([:positive])}")
+    workspace_root = Path.join(root, "workspaces")
+    fake = Path.join(root, "fake-agy")
+    ready = Path.join(root, "ready")
+    after_run = Path.join(root, "after-run")
+    File.mkdir_p!(root)
+
+    File.write!(fake, """
+    #!/bin/sh
+    while IFS= read -r line; do
+      : > "#{ready}"
+      sleep 30
+    done
+    """)
+
+    File.chmod!(fake, 0o755)
+    on_exit(fn -> File.rm_rf(root) end)
+
+    write_workflow_file!(Workflow.workflow_file_path(),
+      workspace_root: workspace_root,
+      antigravity_command: fake,
+      antigravity_stall_timeout_ms: 60_000,
+      hook_after_run: ": > #{after_run}"
+    )
+
+    issue = %Issue{
+      id: "agy-stop",
+      identifier: "AGY-STOP",
+      title: "Stop",
+      state: "In Progress",
+      labels: ["model:gemini-4-neon"]
+    }
+
+    task = Task.async(fn -> AgentRunner.run(issue) end)
+    assert eventually?(fn -> File.exists?(ready) end)
+    assert :ok = AgentRunner.request_stop(task.pid, :issue_inactive)
+    assert :ok = Task.await(task, 5_000)
+    assert File.exists?(after_run)
+  end
+
+  defp eventually?(predicate, attempts \\ 100)
+  defp eventually?(_predicate, 0), do: false
+
+  defp eventually?(predicate, attempts) do
+    if predicate.() do
+      true
+    else
+      Process.sleep(20)
+      eventually?(predicate, attempts - 1)
+    end
   end
 end
