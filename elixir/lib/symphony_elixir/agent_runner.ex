@@ -1,10 +1,11 @@
 defmodule SymphonyElixir.AgentRunner do
   @moduledoc """
-  Executes a single tracker work item in its workspace with Codex.
+  Executes a single tracker work item in its workspace with its selected agent harness.
   """
 
   require Logger
   alias SymphonyElixir.Codex.AppServer
+  alias SymphonyElixir.Antigravity.Runner, as: AntigravityRunner
   alias SymphonyElixir.{Config, PromptBuilder, Tracker, Workspace}
   alias SymphonyElixir.Tracker.Issue
 
@@ -16,6 +17,34 @@ defmodule SymphonyElixir.AgentRunner do
   def continue_with_issue_for_test(%Issue{} = issue, issue_state_fetcher)
       when is_function(issue_state_fetcher, 1) do
     continue_with_issue?(issue, issue_state_fetcher)
+  end
+
+  @doc false
+  @spec harness_for_issue(Issue.t(), map() | nil) ::
+          {:ok, {:codex, nil}} | {:ok, {:antigravity, String.t()}} | {:error, term()}
+  def harness_for_issue(%Issue{} = issue, antigravity_config \\ Config.settings!().antigravity) do
+    labels =
+      issue
+      |> Issue.label_names()
+      |> Enum.map(&(String.trim(&1) |> String.downcase()))
+      |> Enum.filter(&String.starts_with?(&1, "model:"))
+
+    supported =
+      Enum.filter(labels, fn label ->
+        label in [
+          "model:gemini-4-neon",
+          "model:gemini-4-argon",
+          "model:gemini-4-carbon",
+          "model:gemini-4-hydrogen"
+        ]
+      end)
+
+    cond do
+      length(labels) > 1 -> {:error, {:ambiguous_model_labels, labels}}
+      supported == [] -> {:ok, {:codex, nil}}
+      is_nil(antigravity_config) -> {:error, {:antigravity_not_configured, hd(supported)}}
+      true -> {:ok, {:antigravity, "runtime/" <> String.trim_leading(hd(supported), "model:")}}
+    end
   end
 
   @spec run(map(), pid() | nil, keyword()) :: :ok | no_return()
@@ -52,22 +81,32 @@ defmodule SymphonyElixir.AgentRunner do
   defp run_on_worker_host(issue, codex_update_recipient, opts, worker_host) do
     Logger.info("Starting worker attempt for #{issue_context(issue)} worker_host=#{worker_host_for_log(worker_host)}")
 
-    case Workspace.create_for_issue(issue, worker_host) do
-      {:ok, workspace} ->
+    with {:ok, harness} <- harness_for_issue(issue),
+         :ok <- validate_harness_host(harness, worker_host),
+         hook_issue = hook_issue(issue, harness),
+         {:ok, workspace} <- Workspace.create_for_issue(issue, worker_host) do
         send_worker_runtime_info(codex_update_recipient, issue, worker_host, workspace)
 
         try do
-          with :ok <- Workspace.run_before_run_hook(workspace, issue, worker_host) do
-            run_codex_turns(workspace, issue, codex_update_recipient, opts, worker_host)
+          with :ok <- Workspace.run_before_run_hook(workspace, hook_issue, worker_host) do
+            run_harness_turns(harness, workspace, issue, codex_update_recipient, opts, worker_host)
           end
         after
-          Workspace.run_after_run_hook(workspace, issue, worker_host)
+          Workspace.run_after_run_hook(workspace, hook_issue, worker_host)
         end
-
-      {:error, reason} ->
-        {:error, reason}
     end
   end
+
+  defp validate_harness_host({:antigravity, _model}, host) when is_binary(host),
+    do: {:error, :antigravity_remote_workers_not_supported}
+
+  defp validate_harness_host(_harness, _host), do: :ok
+
+  defp hook_issue(issue, {:codex, nil}),
+    do: issue |> Map.from_struct() |> Map.put(:symphony_harness, "codex")
+
+  defp hook_issue(issue, {:antigravity, model}),
+    do: issue |> Map.from_struct() |> Map.merge(%{symphony_harness: "antigravity", symphony_model_alias: model})
 
   defp codex_message_handler(recipient, issue) do
     fn message ->
@@ -99,24 +138,38 @@ defmodule SymphonyElixir.AgentRunner do
 
   defp send_worker_runtime_info(_recipient, _issue, _worker_host, _workspace), do: :ok
 
-  defp run_codex_turns(workspace, issue, codex_update_recipient, opts, worker_host) do
+  defp run_harness_turns({:codex, nil}, workspace, issue, recipient, opts, worker_host) do
+    run_turns(AppServer, workspace, issue, recipient, opts, worker_host, nil)
+  end
+
+  defp run_harness_turns({:antigravity, model}, workspace, issue, recipient, opts, worker_host) do
+    run_turns(AntigravityRunner, workspace, issue, recipient, opts, worker_host, model)
+  end
+
+  defp run_turns(module, workspace, issue, codex_update_recipient, opts, worker_host, model) do
     max_turns = Keyword.get(opts, :max_turns, Config.settings!().agent.max_turns)
     issue_state_fetcher = Keyword.get(opts, :issue_state_fetcher, &Tracker.fetch_issues_by_ids/1)
 
-    with {:ok, session} <- AppServer.start_session(workspace, worker_host: worker_host, issue: issue) do
+    session_result =
+      case module do
+        AppServer -> module.start_session(workspace, worker_host: worker_host, issue: issue)
+        AntigravityRunner -> module.start_session(workspace, issue, model, opts)
+      end
+
+    with {:ok, session} <- session_result do
       try do
-        do_run_codex_turns(session, workspace, issue, codex_update_recipient, opts, issue_state_fetcher, 1, max_turns)
+        do_run_turns(module, session, workspace, issue, codex_update_recipient, opts, issue_state_fetcher, 1, max_turns)
       after
-        AppServer.stop_session(session)
+        module.stop_session(session)
       end
     end
   end
 
-  defp do_run_codex_turns(app_session, workspace, issue, codex_update_recipient, opts, issue_state_fetcher, turn_number, max_turns) do
+  defp do_run_turns(module, app_session, workspace, issue, codex_update_recipient, opts, issue_state_fetcher, turn_number, max_turns) do
     prompt = build_turn_prompt(issue, opts, turn_number, max_turns)
 
     with {:ok, turn_session} <-
-           AppServer.run_turn(
+           module.run_turn(
              app_session,
              prompt,
              issue,
@@ -132,6 +185,7 @@ defmodule SymphonyElixir.AgentRunner do
 
         :none ->
           continue_after_turn(
+            module,
             app_session,
             workspace,
             issue,
@@ -145,12 +199,13 @@ defmodule SymphonyElixir.AgentRunner do
     end
   end
 
-  defp continue_after_turn(app_session, workspace, issue, recipient, opts, fetcher, turn_number, max_turns) do
+  defp continue_after_turn(module, app_session, workspace, issue, recipient, opts, fetcher, turn_number, max_turns) do
     case continue_with_issue?(issue, fetcher) do
       {:continue, refreshed_issue} when turn_number < max_turns ->
         Logger.info("Continuing agent run for #{issue_context(refreshed_issue)} after normal turn completion turn=#{turn_number}/#{max_turns}")
 
-        do_run_codex_turns(
+        do_run_turns(
+          module,
           app_session,
           workspace,
           refreshed_issue,

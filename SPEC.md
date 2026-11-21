@@ -665,6 +665,9 @@ not require recognizing or validating extension fields unless that extension is 
 - `codex.read_timeout_ms`: integer, default `5000`
 - `codex.stall_timeout_ms`: integer, default `300000`
 - `codex.stop_timeout_ms`: integer, default `60000`
+- `antigravity`: optional object; when absent, all issues use Codex
+- `antigravity.command`: non-empty shell command, required when `antigravity` is present
+- `antigravity.stall_timeout_ms`: positive integer, default `300000`
 
 ## 7. Orchestration State Machine
 
@@ -700,6 +703,8 @@ Important nuance:
 - After each normal turn completion, the worker re-checks the tracker issue state.
 - If the issue is still in an active state, the worker SHOULD start another turn on the same live
   coding-agent thread in the same workspace, up to `agent.max_turns`.
+- A single supported `model:gemini-4-*` label MAY select the optional Antigravity harness. Multiple
+  `model:*` labels or a supported label without Antigravity configuration MUST fail explicitly.
 - The first turn SHOULD use the full rendered task prompt.
 - Continuation turns SHOULD send only continuation guidance to the existing thread, not resend the
   original task prompt that is already present in thread history.

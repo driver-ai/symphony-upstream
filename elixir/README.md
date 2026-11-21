@@ -137,6 +137,10 @@ agent:
   max_turns: 20
 codex:
   command: codex app-server
+# Optional opt-in harness for supported Gemini 4 issue labels.
+# antigravity:
+#   command: agy
+#   stall_timeout_ms: 300000
 # Optional; local Linear workers only. Paths must be installed and outside worker-writable roots.
 review:
   enabled: false
@@ -179,6 +183,14 @@ Notes:
   by the Codex turn sandbox.
 - `agent.max_turns` caps how many back-to-back Codex turns Symphony will run in a single agent
   invocation when a turn completes normally but the issue is still in an active state. Default: `20`.
+- `antigravity` is optional. When configured, exactly one of `model:gemini-4-neon`,
+  `model:gemini-4-argon`, `model:gemini-4-carbon`, or `model:gemini-4-hydrogen` routes an issue to
+  `agy` with the corresponding `runtime/gemini-4-*` model. Multiple `model:*` labels are rejected.
+  Without a supported label, the existing Codex path is unchanged.
+- Antigravity uses persistent stream-JSON print mode and a per-session authenticated loopback MCP
+  server for Symphony's bound tools. Tracker secret environment variables are removed from the
+  child. Before/after hooks receive `SYMPHONY_HARNESS` and, for Antigravity,
+  `SYMPHONY_MODEL_ALIAS`.
 - If the Markdown body is blank, Symphony uses a default prompt template that includes the issue
   identifier, title, and body.
 - Use `hooks.after_create` to bootstrap a fresh workspace. For a Git-backed repo, you can run
