@@ -28,8 +28,9 @@ defmodule SymphonyElixir.AntigravityTest do
 
     for variant <- ~w(neon argon carbon hydrogen) do
       issue = %Issue{labels: ["model:gemini-4-#{variant}"]}
+      expected_model = "runtime/gemini-4-#{variant}"
 
-      assert {:ok, {:antigravity, "runtime/gemini-4-#{variant}"}} =
+      assert {:ok, {:antigravity, ^expected_model}} =
                AgentRunner.harness_for_issue(issue, config)
     end
 

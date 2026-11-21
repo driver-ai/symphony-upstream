@@ -238,8 +238,6 @@ defmodule SymphonyElixir.TestSupport do
 
   defp yaml_value(value), do: yaml_value(to_string(value))
 
-  defp hooks_yaml(nil, nil, nil, nil, timeout_ms), do: "hooks:\n  timeout_ms: #{yaml_value(timeout_ms)}"
-
   defp antigravity_yaml(nil, nil), do: nil
 
   defp antigravity_yaml(command, stall_timeout_ms) do
@@ -250,6 +248,8 @@ defmodule SymphonyElixir.TestSupport do
     ]
     |> Enum.join("\n")
   end
+
+  defp hooks_yaml(nil, nil, nil, nil, timeout_ms), do: "hooks:\n  timeout_ms: #{yaml_value(timeout_ms)}"
 
   defp hooks_yaml(hook_after_create, hook_before_run, hook_after_run, hook_before_remove, timeout_ms) do
     [
