@@ -194,6 +194,7 @@ defmodule SymphonyElixir.Antigravity.Runner do
           value when is_map(value) -> value
           _ -> %{}
         end
+
       server = %{"serverUrl" => bridge.url, "headers" => %{"Authorization" => "Bearer #{bridge.token}"}}
       config = Map.put(existing, "mcpServers", Map.put(servers, "symphony", server))
 
@@ -214,6 +215,7 @@ defmodule SymphonyElixir.Antigravity.Runner do
       error -> error
     end
   end
+
   defp restore_mcp_config(path, :missing), do: File.rm(path)
 
   defp ensure_safe_config_parent(path, canonical_workspace) do

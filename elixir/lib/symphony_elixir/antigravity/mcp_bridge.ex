@@ -147,12 +147,13 @@ defmodule SymphonyElixir.Antigravity.McpBridge do
     [request_line | lines] = String.split(raw, "\r\n")
     method = if String.starts_with?(request_line, "POST "), do: :post, else: if(String.starts_with?(request_line, "GET "), do: :get, else: :other)
 
-    headers = Enum.reduce(lines, %{}, fn line, acc ->
-      case String.split(line, ":", parts: 2) do
-        [name, value] -> Map.put(acc, String.downcase(String.trim(name)), String.trim(value))
-        _ -> acc
-      end
-    end)
+    headers =
+      Enum.reduce(lines, %{}, fn line, acc ->
+        case String.split(line, ":", parts: 2) do
+          [name, value] -> Map.put(acc, String.downcase(String.trim(name)), String.trim(value))
+          _ -> acc
+        end
+      end)
 
     {method, headers}
   end

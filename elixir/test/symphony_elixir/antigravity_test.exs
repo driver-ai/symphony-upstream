@@ -113,8 +113,7 @@ defmodule SymphonyElixir.AntigravityTest do
              "params" => %{"name" => "linear_read", "arguments" => %{"operation" => "issue"}}
            }) =~ "200 OK"
 
-    assert_receive {:http_executed, "linear_read", %{"operation" => "issue"},
-                    [thread_id: "agy-thread", session_id: "agy-session"]}
+    assert_receive {:http_executed, "linear_read", %{"operation" => "issue"}, [thread_id: "agy-thread", session_id: "agy-session"]}
   end
 
   test "fake agy streams multiple turns, reports usage, isolates secrets, and exposes hook routing" do
