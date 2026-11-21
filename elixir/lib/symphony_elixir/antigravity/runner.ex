@@ -197,7 +197,7 @@ defmodule SymphonyElixir.Antigravity.Runner do
     with :ok <- File.write(temporary, Jason.encode!(config)),
          :ok <- File.chmod(temporary, 0o600),
          :ok <- File.rename(temporary, path) do
-        {:ok, path, {:mcp_state, previous, parent_identity}}
+      {:ok, path, {:mcp_state, previous, parent_identity}}
     else
       error ->
         File.rm(temporary)
