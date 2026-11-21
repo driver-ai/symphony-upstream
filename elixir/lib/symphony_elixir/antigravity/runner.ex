@@ -20,7 +20,8 @@ defmodule SymphonyElixir.Antigravity.Runner do
           binding: map(),
           workspace: Path.t(),
           model_alias: String.t(),
-          thread_id: String.t()
+          thread_id: String.t(),
+          stall_timeout_ms: pos_integer()
         }
 
   @spec start_session(Path.t(), map(), String.t(), keyword()) :: {:ok, session()} | {:error, term()}
@@ -59,7 +60,8 @@ defmodule SymphonyElixir.Antigravity.Runner do
            binding: binding,
            workspace: workspace,
            model_alias: model_alias,
-           thread_id: thread_id
+           thread_id: thread_id,
+           stall_timeout_ms: Config.settings!().antigravity.stall_timeout_ms
          }}
 
       error ->
@@ -93,7 +95,7 @@ defmodule SymphonyElixir.Antigravity.Runner do
     if executable do
       secret_env = valid_environment_names(binding.secret_environment_names)
       unset = if secret_env == [], do: "", else: "unset #{Enum.join(secret_env, " ")} && "
-      args = "#{unset}exec #{command} --print --input-format stream-json --output-format stream-json --model #{shell_escape(model_alias)} --sandbox --dangerously-skip-permissions"
+      args = "#{unset}exec setsid #{command} --print --input-format stream-json --output-format stream-json --model #{shell_escape(model_alias)} --sandbox --dangerously-skip-permissions"
 
       port =
         Port.open({:spawn_executable, String.to_charlist(executable)}, [
@@ -129,7 +131,7 @@ defmodule SymphonyElixir.Antigravity.Runner do
         terminate_port(session)
         {:ok, %{result: :stopped, stopped: reason, session_id: conversation_id}}
     after
-      Config.settings!().antigravity.stall_timeout_ms ->
+      session.stall_timeout_ms ->
         terminate_port(session)
         {:error, :turn_timeout}
     end
@@ -137,7 +139,7 @@ defmodule SymphonyElixir.Antigravity.Runner do
 
   defp handle_line(session, issue, on_message, line, conversation_id, usage) do
     case Jason.decode(line) do
-      {:ok, payload} ->
+      {:ok, payload} when is_map(payload) ->
         next_id = payload["conversation_id"] || payload["session_id"] || conversation_id
         next_usage = update_usage(session.thread_id, payload["usage"], usage)
         event = if terminal?(payload), do: :turn_completed, else: :notification
@@ -151,6 +153,10 @@ defmodule SymphonyElixir.Antigravity.Runner do
 
       {:error, _} ->
         Logger.debug("Ignoring non-JSON Antigravity output: #{inspect(String.slice(line, 0, 1_000))}")
+        await_turn(session, issue, on_message, "", conversation_id, usage)
+
+      {:ok, _} ->
+        Logger.debug("Ignoring non-object Antigravity JSON output")
         await_turn(session, issue, on_message, "", conversation_id, usage)
     end
   end
@@ -192,7 +198,11 @@ defmodule SymphonyElixir.Antigravity.Runner do
     server = %{"serverUrl" => bridge.url, "headers" => %{"Authorization" => "Bearer #{bridge.token}"}}
     config = Map.put(existing, "mcpServers", Map.put(servers, "symphony", server))
 
-    temporary = path <> ".symphony-#{System.unique_integer([:positive])}"
+    temporary =
+      Path.join(
+        System.tmp_dir!(),
+        "symphony-mcp-#{:crypto.strong_rand_bytes(24) |> Base.url_encode64(padding: false)}"
+      )
 
     with :ok <- File.write(temporary, Jason.encode!(config)),
          :ok <- File.chmod(temporary, 0o600),
@@ -233,7 +243,8 @@ defmodule SymphonyElixir.Antigravity.Runner do
 
     with {:ok, canonical_workspace} <- PathSafety.canonicalize(workspace),
          :ok <- ensure_safe_config_parent(path, canonical_workspace),
-         true <- file_identity!(Path.dirname(path)) == expected_parent,
+         {:ok, current_parent} <- file_identity(Path.dirname(path)),
+         true <- current_parent == expected_parent,
          :ok <- refuse_symlink(path) do
       do_restore_mcp_config(path, previous)
     else
@@ -280,6 +291,13 @@ defmodule SymphonyElixir.Antigravity.Runner do
     {stat.major_device, stat.inode}
   end
 
+  defp file_identity(path) do
+    case File.stat(path) do
+      {:ok, stat} -> {:ok, {stat.major_device, stat.inode}}
+      _ -> {:error, :unsafe_mcp_config_path}
+    end
+  end
+
   defp update_usage(thread_id, usage, _current) when is_map(usage), do: cumulative_usage(thread_id, usage)
   defp update_usage(thread_id, _usage, current), do: current || Process.get({:antigravity_usage, thread_id}, %{})
 
@@ -312,13 +330,13 @@ defmodule SymphonyElixir.Antigravity.Runner do
 
   defp do_terminate_port(port, os_pid) do
     if is_integer(os_pid),
-      do: System.cmd("kill", ["-TERM", Integer.to_string(os_pid)], stderr_to_stdout: true)
+      do: System.cmd("kill", ["-TERM", "--", "-#{os_pid}"], stderr_to_stdout: true)
 
     receive do
       {^port, {:exit_status, _}} -> :ok
     after
       2_000 ->
-        if is_integer(os_pid), do: System.cmd("kill", ["-KILL", Integer.to_string(os_pid)], stderr_to_stdout: true)
+        if is_integer(os_pid), do: System.cmd("kill", ["-KILL", "--", "-#{os_pid}"], stderr_to_stdout: true)
         if port in Port.list(), do: Port.close(port)
     end
   end
