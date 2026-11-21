@@ -9,7 +9,13 @@ defmodule SymphonyElixir.Antigravity.McpBridge do
   @max_connections 16
   @request_timeout_ms 10_000
 
-  @type bridge :: %{listener: port(), acceptor: pid(), peer_root: reference(), url: String.t(), token: String.t()}
+  @type bridge :: %{
+          listener: port(),
+          acceptor: pid(),
+          peer_root: :atomics.atomics_ref(),
+          url: String.t(),
+          token: String.t()
+        }
 
   @spec start(map(), keyword()) :: {:ok, bridge()} | {:error, term()}
   def start(binding, opts \\ []) do
