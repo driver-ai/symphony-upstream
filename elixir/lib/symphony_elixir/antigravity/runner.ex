@@ -13,12 +13,14 @@ defmodule SymphonyElixir.Antigravity.Runner do
 
   @type session :: %{
           port: port(),
+          os_pid: non_neg_integer() | nil,
           bridge: McpBridge.bridge(),
           config_path: Path.t(),
           previous_config: {:ok, binary()} | :missing,
           binding: map(),
           workspace: Path.t(),
-          model_alias: String.t()
+          model_alias: String.t(),
+          thread_id: String.t()
         }
 
   @spec start_session(Path.t(), map(), String.t(), keyword()) :: {:ok, session()} | {:error, term()}
@@ -283,10 +285,10 @@ defmodule SymphonyElixir.Antigravity.Runner do
   end
 
   defp terminate_port(%{port: port, os_pid: os_pid}) do
-    if is_nil(Port.info(port)) do
-      :ok
-    else
+    if port in Port.list() do
       do_terminate_port(port, os_pid)
+    else
+      :ok
     end
   end
 
@@ -299,7 +301,7 @@ defmodule SymphonyElixir.Antigravity.Runner do
     after
       2_000 ->
         if is_integer(os_pid), do: System.cmd("kill", ["-KILL", Integer.to_string(os_pid)], stderr_to_stdout: true)
-        if is_port(port) and not is_nil(Port.info(port)), do: Port.close(port)
+        if port in Port.list(), do: Port.close(port)
     end
   end
 
