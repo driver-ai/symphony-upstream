@@ -231,8 +231,11 @@ defmodule SymphonyElixir.AntigravityTest do
     assert :ok = Task.await(task, 5_000)
     assert File.exists?(after_run)
     pid = File.read!(pid_file) |> String.trim()
-    {_output, status} = System.cmd("kill", ["-0", pid], stderr_to_stdout: true)
-    assert status != 0
+
+    assert eventually?(fn ->
+             {_output, status} = System.cmd("kill", ["-0", pid], stderr_to_stdout: true)
+             status != 0
+           end)
   end
 
   defp http_post(url, token, payload) do
