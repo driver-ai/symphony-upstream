@@ -341,8 +341,14 @@ defmodule SymphonyElixir.Antigravity.Runner do
   end
 
   defp terminate_process_tree(os_pid, signal) when is_integer(os_pid) do
-    pids = descendant_pids(os_pid) ++ [os_pid]
-    System.cmd("kill", [signal, "--" | Enum.map(pids, &Integer.to_string/1)], stderr_to_stdout: true)
+    descendants = descendant_pids(os_pid)
+
+    if descendants != [] do
+      System.cmd("kill", [signal, "--" | Enum.map(descendants, &Integer.to_string/1)], stderr_to_stdout: true)
+      Process.sleep(50)
+    end
+
+    System.cmd("kill", [signal, "--", Integer.to_string(os_pid)], stderr_to_stdout: true)
   end
 
   defp terminate_process_tree(_os_pid, _signal), do: :ok
