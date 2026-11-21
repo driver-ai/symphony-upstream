@@ -34,9 +34,10 @@ defmodule SymphonyElixir.Antigravity.Runner do
   end
 
   defp start_with_bridge(bridge, workspace, command, model_alias, binding, thread_id) do
-    with {:ok, config_path, previous_config} <- install_mcp_config(workspace, bridge) do
-      start_with_config(bridge, config_path, previous_config, workspace, command, model_alias, binding, thread_id)
-    else
+    case install_mcp_config(workspace, bridge) do
+      {:ok, config_path, previous_config} ->
+        start_with_config(bridge, config_path, previous_config, workspace, command, model_alias, binding, thread_id)
+
       error ->
         McpBridge.stop(bridge)
         error
