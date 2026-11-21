@@ -1,8 +1,8 @@
 defmodule SymphonyElixir.Antigravity.McpBridge do
   @moduledoc false
 
-  alias SymphonyElixir.Codex.DynamicTool
   alias SymphonyElixir.Antigravity.PeerAuth
+  alias SymphonyElixir.Codex.DynamicTool
 
   @max_header_bytes 65_536
   @max_body_bytes 1_048_576
@@ -138,16 +138,7 @@ defmodule SymphonyElixir.Antigravity.McpBridge do
     case :gen_tcp.accept(listener, 1_000) do
       {:ok, socket} ->
         root_pid = :atomics.get(peer_root, 1)
-
-        {pid, reference} =
-          spawn_monitor(fn ->
-            if PeerAuth.authorized?(socket, root_pid) do
-              serve(socket, token, binding, Keyword.put(opts, :tool_executor, executor))
-            else
-              send_response(socket, {401, %{"error" => "unauthorized process"}})
-              :gen_tcp.close(socket)
-            end
-          end)
+        {pid, reference} = spawn_monitor(fn -> serve_authorized(socket, root_pid, token, binding, executor, opts) end)
 
         accept_loop(listener, owner, token, binding, executor, opts, peer_root, Map.put(children, reference, pid))
 
@@ -160,6 +151,15 @@ defmodule SymphonyElixir.Antigravity.McpBridge do
 
       {:error, reason} ->
         send(owner, {:antigravity_mcp_error, reason})
+    end
+  end
+
+  defp serve_authorized(socket, root_pid, token, binding, executor, opts) do
+    if PeerAuth.authorized?(socket, root_pid) do
+      serve(socket, token, binding, Keyword.put(opts, :tool_executor, executor))
+    else
+      send_response(socket, {401, %{"error" => "unauthorized process"}})
+      :gen_tcp.close(socket)
     end
   end
 
