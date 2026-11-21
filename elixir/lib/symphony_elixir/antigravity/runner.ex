@@ -329,16 +329,45 @@ defmodule SymphonyElixir.Antigravity.Runner do
   end
 
   defp do_terminate_port(port, os_pid) do
-    if is_integer(os_pid),
-      do: System.cmd("kill", ["-TERM", "--", "-#{os_pid}"], stderr_to_stdout: true)
+    terminate_process_tree(os_pid, "-TERM")
 
     receive do
       {^port, {:exit_status, _}} -> :ok
     after
       2_000 ->
-        if is_integer(os_pid), do: System.cmd("kill", ["-KILL", "--", "-#{os_pid}"], stderr_to_stdout: true)
+        terminate_process_tree(os_pid, "-KILL")
         if port in Port.list(), do: Port.close(port)
     end
+  end
+
+  defp terminate_process_tree(os_pid, signal) when is_integer(os_pid) do
+    pids = descendant_pids(os_pid) ++ [os_pid]
+    System.cmd("kill", [signal, "--" | Enum.map(pids, &Integer.to_string/1)], stderr_to_stdout: true)
+  end
+
+  defp terminate_process_tree(_os_pid, _signal), do: :ok
+
+  defp descendant_pids(root_pid) do
+    {output, _status} = System.cmd("ps", ["-eo", "pid=,ppid="], stderr_to_stdout: true)
+
+    children =
+      output
+      |> String.split("\n", trim: true)
+      |> Enum.flat_map(fn line ->
+        case line |> String.split() |> Enum.map(&Integer.parse/1) do
+          [{pid, ""}, {parent, ""}] -> [{pid, parent}]
+          _ -> []
+        end
+      end)
+
+    collect_descendants([root_pid], children, [])
+  end
+
+  defp collect_descendants([], _children, found), do: found
+
+  defp collect_descendants(parents, children, found) do
+    next = for {pid, parent} <- children, parent in parents, pid not in found, do: pid
+    collect_descendants(next, children, next ++ found)
   end
 
   defp valid_environment_names(names),
