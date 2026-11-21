@@ -16,7 +16,7 @@ defmodule SymphonyElixir.Antigravity.Runner do
           os_pid: non_neg_integer() | nil,
           bridge: McpBridge.bridge(),
           config_path: Path.t(),
-          previous_config: {:ok, binary()} | :missing,
+          previous_config: {:mcp_state, {:ok, binary()} | :missing, term()},
           binding: map(),
           workspace: Path.t(),
           model_alias: String.t(),
@@ -139,7 +139,7 @@ defmodule SymphonyElixir.Antigravity.Runner do
     case Jason.decode(line) do
       {:ok, payload} ->
         next_id = payload["conversation_id"] || payload["session_id"] || conversation_id
-        next_usage = cumulative_usage(session.thread_id, payload["usage"] || usage)
+        next_usage = update_usage(session.thread_id, payload["usage"], usage)
         event = if terminal?(payload), do: :turn_completed, else: :notification
         emit(on_message, event, payload, next_id, next_usage, session.model_alias)
 
@@ -186,17 +186,21 @@ defmodule SymphonyElixir.Antigravity.Runner do
   defp write_mcp_config(path, bridge) do
     previous = read_previous_config(path)
     File.mkdir_p!(Path.dirname(path))
+    parent_identity = file_identity!(Path.dirname(path))
     existing = decode_previous_config(previous)
     servers = normalize_mcp_servers(existing)
     server = %{"serverUrl" => bridge.url, "headers" => %{"Authorization" => "Bearer #{bridge.token}"}}
     config = Map.put(existing, "mcpServers", Map.put(servers, "symphony", server))
 
-    case File.write(path, Jason.encode!(config)) do
-      :ok ->
-        File.chmod!(path, 0o600)
-        {:ok, path, previous}
+    temporary = path <> ".symphony-#{System.unique_integer([:positive])}"
 
+    with :ok <- File.write(temporary, Jason.encode!(config)),
+         :ok <- File.chmod(temporary, 0o600),
+         :ok <- File.rename(temporary, path) do
+        {:ok, path, {:mcp_state, previous, parent_identity}}
+    else
       error ->
+        File.rm(temporary)
         error
     end
   end
@@ -224,14 +228,22 @@ defmodule SymphonyElixir.Antigravity.Runner do
     end
   end
 
-  defp restore_mcp_config(path, {:ok, data}) do
-    case refuse_symlink(path) do
-      :ok -> File.write(path, data)
+  defp restore_mcp_config(path, {:mcp_state, previous, expected_parent}) do
+    workspace = path |> Path.dirname() |> Path.dirname()
+
+    with {:ok, canonical_workspace} <- PathSafety.canonicalize(workspace),
+         :ok <- ensure_safe_config_parent(path, canonical_workspace),
+         true <- file_identity!(Path.dirname(path)) == expected_parent,
+         :ok <- refuse_symlink(path) do
+      do_restore_mcp_config(path, previous)
+    else
+      false -> {:error, :unsafe_mcp_config_path}
       error -> error
     end
   end
 
-  defp restore_mcp_config(path, :missing), do: File.rm(path)
+  defp do_restore_mcp_config(path, {:ok, data}), do: File.write(path, data)
+  defp do_restore_mcp_config(path, :missing), do: File.rm(path)
 
   defp ensure_safe_config_parent(path, canonical_workspace) do
     parent = Path.dirname(path)
@@ -263,7 +275,13 @@ defmodule SymphonyElixir.Antigravity.Runner do
     end
   end
 
-  defp cumulative_usage(thread_id, nil), do: Process.get({:antigravity_usage, thread_id}, %{})
+  defp file_identity!(path) do
+    stat = File.stat!(path)
+    {stat.major_device, stat.inode}
+  end
+
+  defp update_usage(thread_id, usage, _current) when is_map(usage), do: cumulative_usage(thread_id, usage)
+  defp update_usage(thread_id, _usage, current), do: current || Process.get({:antigravity_usage, thread_id}, %{})
 
   defp cumulative_usage(thread_id, usage) when is_map(usage) do
     current = Process.get({:antigravity_usage, thread_id}, %{})

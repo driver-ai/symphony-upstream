@@ -132,6 +132,7 @@ defmodule SymphonyElixir.AntigravityTest do
     while IFS= read -r line; do
       count=$((count + 1))
       printf 'INPUT:%s\n' "$line" >> "#{trace}"
+      printf '{"type":"notification","conversation_id":"conversation-1"}\n'
       printf '{"type":"result","conversation_id":"conversation-1","usage":{"input_tokens":%s}}\n' "$count"
     done
     """)
@@ -185,6 +186,7 @@ defmodule SymphonyElixir.AntigravityTest do
              "antigravity:runtime/gemini-4-neon"
 
     assert_receive {:codex_worker_update, "agy-issue", %{conversation_id: "conversation-1", usage: %{"input_tokens" => 1}}}
+    assert_receive {:codex_worker_update, "agy-issue", %{conversation_id: "conversation-1", usage: %{"input_tokens" => 3}}}
   end
 
   test "graceful stop terminates fake agy and still runs after_run" do

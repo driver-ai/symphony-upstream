@@ -17,15 +17,15 @@ defmodule SymphonyElixir.Antigravity.McpBridge do
            :gen_tcp.listen(0, [:binary, packet: :raw, active: false, ip: {127, 0, 0, 1}, reuseaddr: true]),
          {:ok, {_address, port}} <- :inet.sockname(listener) do
       owner = self()
-      acceptor = spawn_link(fn -> accept_loop(listener, owner, token, binding, executor, opts) end)
+      acceptor = spawn(fn -> accept_loop(listener, owner, token, binding, executor, opts) end)
       {:ok, %{listener: listener, acceptor: acceptor, url: "http://127.0.0.1:#{port}/mcp", token: token}}
     end
   end
 
   @spec stop(bridge()) :: :ok
   def stop(%{listener: listener, acceptor: acceptor}) do
+    if Process.alive?(acceptor), do: Process.exit(acceptor, :shutdown)
     :gen_tcp.close(listener)
-    if Process.alive?(acceptor), do: Process.exit(acceptor, :normal)
     :ok
   end
 
@@ -75,7 +75,7 @@ defmodule SymphonyElixir.Antigravity.McpBridge do
   defp accept_loop(listener, owner, token, binding, executor, opts) do
     case :gen_tcp.accept(listener) do
       {:ok, socket} ->
-        spawn(fn -> serve(socket, token, binding, Keyword.put(opts, :tool_executor, executor)) end)
+        spawn_link(fn -> serve(socket, token, binding, Keyword.put(opts, :tool_executor, executor)) end)
         accept_loop(listener, owner, token, binding, executor, opts)
 
       {:error, :closed} ->
@@ -90,7 +90,7 @@ defmodule SymphonyElixir.Antigravity.McpBridge do
     response =
       with {:ok, request} <- read_request(socket, token),
            :post <- request.method,
-           {:ok, payload} <- Jason.decode(request.body) do
+           {:ok, payload} when is_map(payload) <- Jason.decode(request.body) do
         if payload["method"] == "notifications/initialized" do
           {202, nil}
         else

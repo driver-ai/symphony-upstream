@@ -185,16 +185,17 @@ Notes:
   invocation when a turn completes normally but the issue is still in an active state. Default: `20`.
 - `antigravity` is optional. When configured, exactly one of `model:gemini-4-neon`,
   `model:gemini-4-argon`, `model:gemini-4-carbon`, or `model:gemini-4-hydrogen` routes an issue to
-  `agy` with the corresponding `runtime/gemini-4-*` model. Multiple `model:*` labels are rejected.
-  Without a supported label, the existing Codex path is unchanged.
+  `agy` with the corresponding `runtime/gemini-4-*` model. A supported Gemini label combined with
+  any other `model:*` label is rejected; unrelated model labels remain on the Codex path.
 - Antigravity uses persistent stream-JSON print mode and a per-session authenticated loopback MCP
   server for Symphony's bound tools. Tracker secret environment variables are removed from the
   child. Before/after hooks receive `SYMPHONY_HARNESS` and, for Antigravity,
   `SYMPHONY_MODEL_ALIAS`.
 - Antigravity currently supports local workers only. `stall_timeout_ms` is the maximum silence
-  interval while an Antigravity turn streams, not a total turn deadline. Its `--sandbox` invocation
-  remains bounded to the issue workspace even though permission prompts are disabled for headless
-  operation.
+  interval while an Antigravity turn streams, not a total turn deadline. The orchestrator's
+  `codex.stall_timeout_ms` remains the outer inactivity limit for every harness, so configure it
+  above the Antigravity timeout to allow runner cleanup. The headless launch uses agy's documented
+  workspace sandbox with permission prompts disabled.
 - If the Markdown body is blank, Symphony uses a default prompt template that includes the issue
   identifier, title, and body.
 - Use `hooks.after_create` to bootstrap a fresh workspace. For a Git-backed repo, you can run
