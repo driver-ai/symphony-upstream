@@ -107,6 +107,48 @@ defmodule SymphonyElixir.AntigravityTest do
              )
   end
 
+  test "antigravity default_model routes unlabeled issues to Antigravity while allowing model:codex opt-out" do
+    assert {:ok, settings} =
+             Schema.parse(%{
+               "antigravity" => %{
+                 "command" => "agy",
+                 "default_model" => "runtime/gemini-4-neon",
+                 "external_sandbox_attested" => true
+               }
+             })
+
+    assert settings.antigravity.default_model == "runtime/gemini-4-neon"
+
+    assert {:error, {:invalid_workflow_config, blank_message}} =
+             Schema.parse(%{"antigravity" => %{"command" => "agy", "default_model" => "  "}})
+
+    assert blank_message =~ "default_model"
+
+    config = %{
+      command: "agy",
+      default_model: "runtime/gemini-4-neon",
+      external_sandbox_attested: true
+    }
+
+    review = %{enabled: true}
+
+    assert {:ok, {:antigravity, "runtime/gemini-4-neon"}} =
+             AgentRunner.harness_for_issue(%Issue{labels: []}, config, review)
+
+    assert {:ok, {:codex, nil}} =
+             AgentRunner.harness_for_issue(%Issue{labels: ["model:codex"]}, config, review)
+
+    assert {:ok, {:antigravity, "runtime/gemini-4-argon"}} =
+             AgentRunner.harness_for_issue(%Issue{labels: ["model:gemini-4-argon"]}, config, review)
+
+    assert {:error, :antigravity_external_sandbox_not_attested} =
+             AgentRunner.harness_for_issue(
+               %Issue{labels: []},
+               %{command: "agy", default_model: "runtime/gemini-4-neon", external_sandbox_attested: false},
+               review
+             )
+  end
+
   test "MCP bridge exposes bound tools and delegates calls through the supplied executor" do
     parent = self()
 

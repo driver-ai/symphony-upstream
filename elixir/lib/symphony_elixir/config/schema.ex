@@ -309,6 +309,7 @@ defmodule SymphonyElixir.Config.Schema do
     @primary_key false
     embedded_schema do
       field(:command, :string)
+      field(:default_model, :string)
       field(:stall_timeout_ms, :integer, default: 300_000)
       field(:external_sandbox_attested, :boolean, default: false)
     end
@@ -316,10 +317,13 @@ defmodule SymphonyElixir.Config.Schema do
     @spec changeset(%__MODULE__{}, map()) :: Ecto.Changeset.t()
     def changeset(schema, attrs) do
       schema
-      |> cast(attrs, [:command, :stall_timeout_ms, :external_sandbox_attested], empty_values: [])
+      |> cast(attrs, [:command, :default_model, :stall_timeout_ms, :external_sandbox_attested], empty_values: [])
       |> validate_required([:command, :stall_timeout_ms])
       |> validate_change(:command, fn :command, command ->
         if String.trim(command) == "", do: [command: "can't be blank"], else: []
+      end)
+      |> validate_change(:default_model, fn :default_model, model ->
+        if is_binary(model) and String.trim(model) == "", do: [default_model: "can't be blank"], else: []
       end)
       |> validate_number(:stall_timeout_ms, greater_than: 0)
     end

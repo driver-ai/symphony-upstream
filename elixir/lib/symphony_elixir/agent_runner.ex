@@ -43,21 +43,45 @@ defmodule SymphonyElixir.AgentRunner do
         ]
       end)
 
+    default_model =
+      case antigravity_config do
+        %{default_model: model} when is_binary(model) -> String.trim(model)
+        _ -> nil
+      end
+
     cond do
-      supported == [] ->
+      labels == ["model:codex"] ->
         {:ok, {:codex, nil}}
 
-      length(labels) > 1 ->
+      length(labels) > 1 and (supported != [] or not is_nil(default_model)) ->
         {:error, {:ambiguous_model_labels, labels}}
 
+      supported != [] ->
+        resolve_antigravity_harness(
+          "runtime/" <> String.trim_leading(hd(supported), "model:"),
+          hd(supported),
+          antigravity_config,
+          review_config
+        )
+
+      labels == [] and is_binary(default_model) and default_model != "" ->
+        resolve_antigravity_harness(default_model, default_model, antigravity_config, review_config)
+
+      true ->
+        {:ok, {:codex, nil}}
+    end
+  end
+
+  defp resolve_antigravity_harness(model_alias, requested, antigravity_config, review_config) do
+    cond do
       is_nil(antigravity_config) ->
-        {:error, {:antigravity_not_configured, hd(supported)}}
+        {:error, {:antigravity_not_configured, requested}}
 
       review_config.enabled and not antigravity_config.external_sandbox_attested ->
         {:error, :antigravity_external_sandbox_not_attested}
 
       true ->
-        {:ok, {:antigravity, "runtime/" <> String.trim_leading(hd(supported), "model:")}}
+        {:ok, {:antigravity, model_alias}}
     end
   end
 
