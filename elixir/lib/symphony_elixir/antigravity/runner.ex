@@ -82,7 +82,7 @@ defmodule SymphonyElixir.Antigravity.Runner do
     turn_id = :erlang.unique_integer([:positive]) |> Integer.to_string()
     session_id = "#{session.thread_id}-#{turn_id}"
     emit(on_message, :session_started, %{}, session_id, %{}, session.model_alias)
-    send_json(port, %{"type" => "user", "message" => %{"role" => "user", "content" => prompt}})
+    send_json(port, %{"event" => "user", "message" => %{"content" => prompt}})
     await_turn(session, issue, on_message, "", session_id, nil)
   end
 
@@ -100,7 +100,7 @@ defmodule SymphonyElixir.Antigravity.Runner do
     if executable do
       secret_env = valid_environment_names(binding.secret_environment_names)
       unset = if secret_env == [], do: "", else: "unset #{Enum.join(secret_env, " ")} && "
-      args = "#{unset}exec #{command} --print --input-format stream-json --output-format stream-json --model #{shell_escape(model_alias)} --sandbox --dangerously-skip-permissions"
+      args = "#{unset}exec #{command} --input-format stream-json --output-format stream-json --model #{shell_escape(model_alias)} --sandbox --dangerously-skip-permissions"
 
       port =
         Port.open({:spawn_executable, String.to_charlist(executable)}, [
@@ -145,8 +145,8 @@ defmodule SymphonyElixir.Antigravity.Runner do
   defp handle_line(session, issue, on_message, line, conversation_id, usage) do
     case Jason.decode(line) do
       {:ok, payload} when is_map(payload) ->
-        next_id = payload["conversation_id"] || payload["session_id"] || conversation_id
-        next_usage = update_usage(session.thread_id, payload["usage"], usage)
+        next_id = extract_conversation_id(payload, conversation_id)
+        next_usage = update_usage(session.thread_id, extract_usage(payload), usage)
         event = if terminal?(payload), do: :turn_completed, else: :notification
         emit(on_message, event, payload, next_id, next_usage, session.model_alias)
 
@@ -166,8 +166,30 @@ defmodule SymphonyElixir.Antigravity.Runner do
     end
   end
 
-  defp terminal?(payload),
-    do: payload["type"] in ["result", "turn_completed", "turn/completed"] or payload["done"] == true
+  defp extract_conversation_id(payload, fallback) do
+    payload["conversation_id"] ||
+      payload["session_id"] ||
+      nested_field(payload, "result", "conversation_id") ||
+      nested_field(payload, "step_update", "conversation_id") ||
+      fallback
+  end
+
+  defp extract_usage(payload) do
+    payload["usage"] || nested_field(payload, "result", "usage")
+  end
+
+  defp nested_field(payload, section, key) do
+    case Map.get(payload, section) do
+      %{} = nested -> Map.get(nested, key)
+      _ -> nil
+    end
+  end
+
+  defp terminal?(payload) do
+    payload["event"] == "result" or
+      payload["type"] in ["result", "turn_completed", "turn/completed"] or
+      payload["done"] == true
+  end
 
   defp emit(on_message, event, payload, conversation_id, usage, model_alias) do
     token_payload = Map.put(payload, "tokenUsage", %{"total" => usage})
