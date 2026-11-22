@@ -184,10 +184,10 @@ defmodule SymphonyElixir.Antigravity.McpBridge do
       with {:ok, request} <- read_request(socket, token),
            :post <- request.method,
            {:ok, payload} when is_map(payload) <- Jason.decode(request.body) do
-        if payload["method"] == "notifications/initialized" do
-          {202, nil}
-        else
+        if Map.has_key?(payload, "id") do
           {200, dispatch(payload, binding, opts)}
+        else
+          {202, nil}
         end
       else
         {:error, :unauthorized} -> {401, %{"error" => "unauthorized"}}

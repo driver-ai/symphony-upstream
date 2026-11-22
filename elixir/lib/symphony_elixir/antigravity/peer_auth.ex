@@ -35,7 +35,9 @@ defmodule SymphonyElixir.Antigravity.PeerAuth do
   defp matching_inode(line, local_port, peer_port) do
     case String.split(line) do
       [_slot, local, remote, "01" | fields] ->
-        if endpoint_port(local) == local_port and endpoint_port(remote) == peer_port, do: Enum.at(fields, 5)
+        # Match the client-side TCP entry (local == peer_port, remote == local_port)
+        # so inode_owner/1 resolves the connecting client process, not the BEAM server socket.
+        if endpoint_port(local) == peer_port and endpoint_port(remote) == local_port, do: Enum.at(fields, 5)
 
       _ ->
         nil
