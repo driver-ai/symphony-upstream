@@ -19,6 +19,13 @@ defmodule SymphonyElixir.AgentRunner do
     continue_with_issue?(issue, issue_state_fetcher)
   end
 
+  @antigravity_model_labels [
+    "model:gemini-4-neon",
+    "model:gemini-4-argon",
+    "model:gemini-4-carbon",
+    "model:gemini-4-hydrogen"
+  ]
+
   @doc false
   @spec harness_for_issue(Issue.t(), map() | nil, map()) ::
           {:ok, {:codex, nil}} | {:ok, {:antigravity, String.t()}} | {:error, term()}
@@ -27,63 +34,66 @@ defmodule SymphonyElixir.AgentRunner do
         antigravity_config \\ Config.settings!().antigravity,
         review_config \\ Config.settings!().review
       ) do
-    labels =
-      issue
-      |> Issue.label_names()
-      |> Enum.map(&(String.trim(&1) |> String.downcase()))
-      |> Enum.filter(&String.starts_with?(&1, "model:"))
+    labels = model_labels(issue)
+    supported = Enum.filter(labels, &(&1 in @antigravity_model_labels))
+    default_model = antigravity_default_model(antigravity_config)
 
-    supported =
-      Enum.filter(labels, fn label ->
-        label in [
-          "model:gemini-4-neon",
-          "model:gemini-4-argon",
-          "model:gemini-4-carbon",
-          "model:gemini-4-hydrogen"
-        ]
-      end)
+    route_harness(labels, supported, default_model, antigravity_config, review_config)
+  end
 
-    default_model =
-      case antigravity_config do
-        %{default_model: model} when is_binary(model) -> String.trim(model)
-        _ -> nil
-      end
+  defp model_labels(issue) do
+    issue
+    |> Issue.label_names()
+    |> Enum.map(&(String.trim(&1) |> String.downcase()))
+    |> Enum.filter(&String.starts_with?(&1, "model:"))
+  end
 
-    cond do
-      labels == ["model:codex"] ->
-        {:ok, {:codex, nil}}
-
-      length(labels) > 1 and (supported != [] or not is_nil(default_model)) ->
-        {:error, {:ambiguous_model_labels, labels}}
-
-      supported != [] ->
-        resolve_antigravity_harness(
-          "runtime/" <> String.trim_leading(hd(supported), "model:"),
-          hd(supported),
-          antigravity_config,
-          review_config
-        )
-
-      labels == [] and is_binary(default_model) and default_model != "" ->
-        resolve_antigravity_harness(default_model, default_model, antigravity_config, review_config)
-
-      true ->
-        {:ok, {:codex, nil}}
+  defp antigravity_default_model(%{default_model: model}) when is_binary(model) do
+    case String.trim(model) do
+      "" -> nil
+      trimmed -> trimmed
     end
   end
 
-  defp resolve_antigravity_harness(model_alias, requested, antigravity_config, review_config) do
-    cond do
-      is_nil(antigravity_config) ->
-        {:error, {:antigravity_not_configured, requested}}
+  defp antigravity_default_model(_config), do: nil
 
-      review_config.enabled and not antigravity_config.external_sandbox_attested ->
-        {:error, :antigravity_external_sandbox_not_attested}
+  defp route_harness(["model:codex"], _supported, _default_model, _antigravity_config, _review_config),
+    do: {:ok, {:codex, nil}}
 
-      true ->
-        {:ok, {:antigravity, model_alias}}
-    end
+  defp route_harness(labels, supported, default_model, _antigravity_config, _review_config)
+       when length(labels) > 1 and (supported != [] or not is_nil(default_model)),
+       do: {:error, {:ambiguous_model_labels, labels}}
+
+  defp route_harness(_labels, [label | _], _default_model, antigravity_config, review_config) do
+    resolve_antigravity_harness(
+      "runtime/" <> String.trim_leading(label, "model:"),
+      label,
+      antigravity_config,
+      review_config
+    )
   end
+
+  defp route_harness([], [], default_model, antigravity_config, review_config)
+       when is_binary(default_model) do
+    resolve_antigravity_harness(default_model, default_model, antigravity_config, review_config)
+  end
+
+  defp route_harness(_labels, _supported, _default_model, _antigravity_config, _review_config),
+    do: {:ok, {:codex, nil}}
+
+  defp resolve_antigravity_harness(_model_alias, requested, nil, _review_config),
+    do: {:error, {:antigravity_not_configured, requested}}
+
+  defp resolve_antigravity_harness(
+         _model_alias,
+         _requested,
+         %{external_sandbox_attested: false},
+         %{enabled: true}
+       ),
+       do: {:error, :antigravity_external_sandbox_not_attested}
+
+  defp resolve_antigravity_harness(model_alias, _requested, _antigravity_config, _review_config),
+    do: {:ok, {:antigravity, model_alias}}
 
   @spec run(map(), pid() | nil, keyword()) :: :ok | no_return()
   def run(issue, codex_update_recipient \\ nil, opts \\ []) do
