@@ -225,9 +225,9 @@ defmodule SymphonyElixir.AntigravityTest do
       printf 'INPUT:%s\n' "$line" >> "#{trace}"
       printf 'MCP_MODE:%s\n' "$(stat -c '%a' .agents/mcp_config.json)" >> "#{trace}"
       grep -q 'Bearer ' .agents/mcp_config.json && printf 'MCP_AUTH:present\n' >> "#{trace}"
-      printf '{"type":"notification","conversation_id":"conversation-1"}\n'
-      printf '{"type":"notification","conversation_id":"conversation-1"}\n'
-      printf '{"type":"result","conversation_id":"conversation-1","usage":{"input_tokens":%s}}\n' "$count"
+      printf '{"event":"init","conversation_id":"conversation-1"}\n'
+      printf '{"event":"step_update","step_update":{"conversation_id":"conversation-1","step_type":"agent_response"}}\n'
+      printf '{"event":"result","result":{"conversation_id":"conversation-1","status":"SUCCESS","usage":{"input_tokens":%s}}}\n' "$count"
     done
     """)
 
@@ -284,6 +284,7 @@ defmodule SymphonyElixir.AntigravityTest do
     contents = File.read!(trace)
     assert contents =~ "--input-format stream-json"
     assert contents =~ "--model runtime/gemini-4-neon"
+    assert contents =~ ~s("event":"user")
     assert contents =~ "SECRET:unset"
     assert contents =~ "MODEL:runtime/gemini-4-neon"
     assert contents =~ "MCP_MODE:600"
